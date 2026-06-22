@@ -3,13 +3,14 @@ import os
 import re
 import subprocess
 import platform
+from collections import deque
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QLabel, QProgressBar,
-    QScrollArea, QFrame, QCheckBox, QSizePolicy
+    QScrollArea, QFrame, QCheckBox, QSizePolicy, QSpinBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QTimer
 from PyQt6.QtGui import (
     QFont, QColor, QPalette, QPixmap, QIcon, QPainter,
     QBrush, QImage, QPolygon
@@ -22,6 +23,10 @@ import yt_dlp
 # ─── Config ───────────────────────────────────────────────────────────────────
 DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Descargas_YouTube")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# Máximo de descargas simultáneas (ajustable por el usuario, default: 2)
+DEFAULT_CONCURRENT = 2
+MAX_CONCURRENT     = 5
 
 C_BG      = "#0d0d14"
 C_SURFACE = "#14141f"
@@ -72,7 +77,10 @@ class FetchThread(QThread):
                 })
             else:
                 formats = info.get('formats', [])
-                heights = sorted(set(f.get('height') for f in formats if f.get('height')), reverse=True)
+                heights = sorted(
+                    set(f.get('height') for f in formats if f.get('height')),
+                    reverse=True
+                )
                 self.result.emit({
                     'type':      'video',
                     'title':     info.get('title', 'Sin título'),
@@ -120,14 +128,18 @@ class DownloadThread(QThread):
                 'progress_hooks': [self._hook],
                 'quiet': True, 'no_warnings': True,
                 'extractor_args': {'youtube': ['player_client=android,web']},
+                # Limitar fragmentos simultáneos para reducir uso de red/CPU
+                'concurrent_fragment_downloads': 3,
             }
             if self.fmt == 'mp3':
                 base.update({
                     'format': 'bestaudio/best',
                     'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
-                    'postprocessors': [{'key': 'FFmpegExtractAudio',
-                                        'preferredcodec': 'mp3',
-                                        'preferredquality': '192'}],
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192'
+                    }],
                 })
             else:
                 qmap = {
@@ -163,7 +175,6 @@ class PlaylistRow(QWidget):
         layout.setContentsMargins(12, 0, 16, 0)
         layout.setSpacing(10)
 
-        # Checkbox
         self.chk = QCheckBox()
         self.chk.setChecked(True)
         self.chk.setStyleSheet(f"""
@@ -183,21 +194,18 @@ class PlaylistRow(QWidget):
         """)
         self.chk.stateChanged.connect(self._on_toggle)
 
-        # Número
         num = QLabel(f"{index}")
         num.setFixedWidth(30)
         num.setFont(QFont("Consolas", 8))
         num.setStyleSheet(f"color: {C_MUTED};")
         num.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        # Título
         short = title if len(title) <= 65 else title[:63] + "…"
         self.lbl = QLabel(short)
         self.lbl.setFont(QFont("Segoe UI", 9))
         self.lbl.setStyleSheet(f"color: {C_TEXT};")
         self.lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        # Duración
         dur_lbl = QLabel(self._fmt_dur(duration))
         dur_lbl.setFont(QFont("Consolas", 8))
         dur_lbl.setStyleSheet(f"color: {C_MUTED};")
@@ -214,7 +222,7 @@ class PlaylistRow(QWidget):
         self.lbl.setStyleSheet(f"color: {'#f0f0f8' if checked else C_MUTED};")
         self.toggled.emit()
 
-    def is_checked(self):  return self.chk.isChecked()
+    def is_checked(self):     return self.chk.isChecked()
     def set_checked(self, v): self.chk.setChecked(v)
 
     @staticmethod
@@ -245,9 +253,9 @@ class DownloadCard(QFrame):
         self.lbl_title  = QLabel(title[:74] + ('…' if len(title) > 74 else ''))
         self.lbl_title.setFont(QFont("Segoe UI", 9, QFont.Weight.Medium))
         self.lbl_title.setStyleSheet(f"color: {C_TEXT}; background: transparent; border: none;")
-        self.lbl_status = QLabel("Iniciando…")
+        self.lbl_status = QLabel("En cola…")
         self.lbl_status.setFont(QFont("Consolas", 8))
-        self.lbl_status.setStyleSheet(f"color: {C_GOLD}; background: transparent; border: none;")
+        self.lbl_status.setStyleSheet(f"color: {C_MUTED}; background: transparent; border: none;")
         self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         top.addWidget(self.lbl_title, 1)
         top.addWidget(self.lbl_status)
@@ -277,6 +285,14 @@ class DownloadCard(QFrame):
         bot.addWidget(self.lbl_speed, 1)
         bot.addWidget(self.lbl_pct)
         lay.addLayout(bot)
+
+    def set_queued(self, position):
+        self.lbl_status.setText(f"En cola #{position}")
+        self.lbl_status.setStyleSheet(f"color: {C_MUTED}; background: transparent; border: none;")
+
+    def set_starting(self):
+        self.lbl_status.setText("Iniciando…")
+        self.lbl_status.setStyleSheet(f"color: {C_GOLD}; background: transparent; border: none;")
 
     def update_progress(self, pct, speed, status):
         self.bar.setValue(int(pct))
@@ -313,12 +329,27 @@ class MainWindow(QMainWindow):
         self._set_icon()
         self._apply_palette()
 
-        self.current_info   = None
-        self.download_cards = {}
-        self.active_threads = []
-        self.playlist_rows  = []
+        self.current_info     = None
+        self.download_cards   = {}
+        self.playlist_rows    = []
         self.selected_fmt     = 'mp4'
         self.selected_quality = 'best'
+
+        # ── Cola de descargas (throttled) ──────────────────────────────
+        self._download_queue:   deque = deque()   # (task_id, title, url)
+        self._active_threads:   dict  = {}        # task_id → DownloadThread
+        self._finished_threads: list  = []        # threads terminados para liberar
+        self._max_concurrent    = DEFAULT_CONCURRENT
+
+        # Limpieza periódica de threads terminados (cada 5 s)
+        self._gc_timer = QTimer(self)
+        self._gc_timer.setInterval(5000)
+        self._gc_timer.timeout.connect(self._gc_threads)
+        self._gc_timer.start()
+
+        # Un solo QNetworkAccessManager reutilizable para thumbnails
+        self._net_mgr = QNetworkAccessManager(self)
+        self._net_mgr.finished.connect(self._on_thumb)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -332,7 +363,7 @@ class MainWindow(QMainWindow):
             QScrollBar::handle:vertical {{ background: {C_BORDER}; border-radius: 3px; }}
         """)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(0,0,0,0)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
         inner = QWidget()
@@ -384,14 +415,14 @@ class MainWindow(QMainWindow):
         p = QPainter(img)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setBrush(QBrush(QColor("#0a0a0f"))); p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(0,0,sz,sz,11,11)
+        p.drawRoundedRect(0, 0, sz, sz, 11, 11)
         p.setBrush(QBrush(QColor(C_ACCENT)))
-        p.drawEllipse(5,5,sz-10,sz-10)
+        p.drawEllipse(5, 5, sz-10, sz-10)
         p.setBrush(QBrush(QColor("white")))
-        cx,cy,h=sz//2,sz//2,10
-        p.drawPolygon(QPolygon([QPoint(cx-h+2,cy-h),QPoint(cx-h+2,cy+h),QPoint(cx+h+2,cy)]))
+        cx, cy, h = sz//2, sz//2, 10
+        p.drawPolygon(QPolygon([QPoint(cx-h+2,cy-h), QPoint(cx-h+2,cy+h), QPoint(cx+h+2,cy)]))
         p.end()
-        logo = QLabel(); logo.setPixmap(QPixmap.fromImage(img)); logo.setFixedSize(sz,sz)
+        logo = QLabel(); logo.setPixmap(QPixmap.fromImage(img)); logo.setFixedSize(sz, sz)
         row.addWidget(logo)
         col = QVBoxLayout(); col.setSpacing(2)
         t1 = QLabel("YT Downloader")
@@ -468,7 +499,39 @@ class MainWindow(QMainWindow):
             b.clicked.connect(self._on_quality)
             self.quality_pills.append(b); qp.addWidget(b)
         qp.addStretch(); self.qc.addLayout(qp)
-        inner.addLayout(self.qc); inner.addStretch()
+        inner.addLayout(self.qc)
+
+        # ── Descargas simultáneas ──────────────────────────────────────
+        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.VLine)
+        sep2.setStyleSheet(f"color: {C_BORDER};"); inner.addWidget(sep2)
+
+        cc = QVBoxLayout(); cc.setSpacing(7)
+        cl = QLabel("Descargas a la vez"); cl.setFont(QFont("Segoe UI", 8))
+        cl.setStyleSheet(f"color: {C_MUTED};"); cc.addWidget(cl)
+        self.spin_concurrent = QSpinBox()
+        self.spin_concurrent.setRange(1, MAX_CONCURRENT)
+        self.spin_concurrent.setValue(DEFAULT_CONCURRENT)
+        self.spin_concurrent.setFixedWidth(60)
+        self.spin_concurrent.setFixedHeight(30)
+        self.spin_concurrent.setStyleSheet(f"""
+            QSpinBox {{
+                background: {C_SURF2}; border: 1px solid {C_BORDER};
+                border-radius: 7px; color: {C_TEXT}; padding: 0 8px;
+                font-family: Consolas; font-size: 10pt;
+            }}
+            QSpinBox::up-button, QSpinBox::down-button {{
+                width: 18px; border: none; background: {C_SURF3};
+            }}
+        """)
+        self.spin_concurrent.valueChanged.connect(self._on_concurrent_change)
+        hint = QLabel("(1–5 recomendado)")
+        hint.setFont(QFont("Segoe UI", 7))
+        hint.setStyleSheet(f"color: {C_MUTED};")
+        cc.addWidget(self.spin_concurrent)
+        cc.addWidget(hint)
+        inner.addLayout(cc)
+
+        inner.addStretch()
         lay.addLayout(inner)
         self.main_layout.addWidget(card)
 
@@ -508,11 +571,10 @@ class MainWindow(QMainWindow):
         lay.addLayout(act)
         self.info_card.hide(); self.main_layout.addWidget(self.info_card)
 
-    # ── Panel playlist con selección ───────────────────────────────────────
+    # ── Panel playlist ─────────────────────────────────────────────────────
     def _build_playlist_card(self):
         self.pl_card = self._card(); lay = self.pl_card.layout()
 
-        # Título de playlist
         head = QHBoxLayout()
         self.lbl_pl_title = QLabel("Playlist")
         self.lbl_pl_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Medium))
@@ -523,29 +585,22 @@ class MainWindow(QMainWindow):
         head.addWidget(self.lbl_pl_title, 1); head.addWidget(self.lbl_pl_count)
         lay.addLayout(head)
 
-        # ── Barra de selección ─────────────────────────────────────────
         sel_bar = QHBoxLayout(); sel_bar.setSpacing(8)
-
         self.btn_sel_all    = self._btn_sel("☑  Todos")
         self.btn_sel_none   = self._btn_sel("☐  Ninguno")
         self.btn_sel_invert = self._btn_sel("⇌  Invertir")
         self.btn_sel_all.clicked.connect(lambda: self._set_all(True))
         self.btn_sel_none.clicked.connect(lambda: self._set_all(False))
         self.btn_sel_invert.clicked.connect(self._invert)
-
         self.lbl_sel_count = QLabel("0 seleccionados")
         self.lbl_sel_count.setFont(QFont("Consolas", 8))
         self.lbl_sel_count.setStyleSheet(f"color: {C_GOLD};")
         self.lbl_sel_count.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        sel_bar.addWidget(self.btn_sel_all)
-        sel_bar.addWidget(self.btn_sel_none)
-        sel_bar.addWidget(self.btn_sel_invert)
-        sel_bar.addStretch()
+        sel_bar.addWidget(self.btn_sel_all); sel_bar.addWidget(self.btn_sel_none)
+        sel_bar.addWidget(self.btn_sel_invert); sel_bar.addStretch()
         sel_bar.addWidget(self.lbl_sel_count)
         lay.addLayout(sel_bar)
 
-        # ── Lista scrollable ───────────────────────────────────────────
         self.pl_scroll = QScrollArea()
         self.pl_scroll.setFixedHeight(280)
         self.pl_scroll.setWidgetResizable(True)
@@ -565,7 +620,6 @@ class MainWindow(QMainWindow):
         self.pl_scroll.setWidget(self.pl_inner)
         lay.addWidget(self.pl_scroll)
 
-        # ── Botones acción ─────────────────────────────────────────────
         act = QHBoxLayout(); act.setSpacing(10)
         self.btn_dl_pl = self._btn_primary("↓  Descargar seleccionados")
         self.btn_dl_pl.setFixedHeight(40)
@@ -580,7 +634,21 @@ class MainWindow(QMainWindow):
     # ── Panel descargas ─────────────────────────────────────────────────────
     def _build_downloads_panel(self):
         self.dl_panel = self._card(); lay = self.dl_panel.layout()
-        self._sec_lbl(lay, "DESCARGAS")
+
+        dl_head = QHBoxLayout()
+        self._sec_lbl_widget = QLabel("DESCARGAS")
+        self._sec_lbl_widget.setFont(QFont("Consolas", 7, QFont.Weight.Bold))
+        self._sec_lbl_widget.setStyleSheet(
+            f"color: {C_MUTED}; letter-spacing: 2px; border: none; background: transparent;"
+        )
+        self.lbl_queue_info = QLabel("")
+        self.lbl_queue_info.setFont(QFont("Consolas", 8))
+        self.lbl_queue_info.setStyleSheet(f"color: {C_GOLD}; background: transparent; border: none;")
+        self.lbl_queue_info.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        dl_head.addWidget(self._sec_lbl_widget, 1)
+        dl_head.addWidget(self.lbl_queue_info)
+        lay.addLayout(dl_head)
+
         self.dl_list_layout = QVBoxLayout(); self.dl_list_layout.setSpacing(8)
         lay.addLayout(self.dl_list_layout)
         btn_f = self._btn_ghost("📁  Abrir carpeta de descargas")
@@ -588,7 +656,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(btn_f)
         self.dl_panel.hide(); self.main_layout.addWidget(self.dl_panel)
 
-    # ─── Lógica ───────────────────────────────────────────────────────────
+    # ─── Lógica de fetch ──────────────────────────────────────────────────
 
     def fetch_info(self):
         url = self.url_input.text().strip()
@@ -624,11 +692,13 @@ class MainWindow(QMainWindow):
         self.lbl_vid_title.setText(data['title'])
         v = data.get('views', 0)
         vs = f"{v/1e6:.1f}M vistas" if v>1e6 else (f"{v/1e3:.0f}K vistas" if v>1e3 else f"{v} vistas")
-        self.lbl_vid_meta.setText(f"{data.get('channel','')}   ·   {self._fmt_dur(data.get('duration',0))}   ·   {vs}")
-        if data.get('thumbnail'): self._load_thumb(data['thumbnail'])
+        self.lbl_vid_meta.setText(
+            f"{data.get('channel','')}   ·   {self._fmt_dur(data.get('duration',0))}   ·   {vs}"
+        )
+        if data.get('thumbnail'):
+            self._load_thumb(data['thumbnail'])
 
     def _render_playlist(self, data):
-        # Limpiar
         self.playlist_rows.clear()
         while self.pl_rows_layout.count() > 1:
             item = self.pl_rows_layout.takeAt(0)
@@ -657,7 +727,7 @@ class MainWindow(QMainWindow):
         self._update_sel_count()
 
     def _update_sel_count(self):
-        n = sum(1 for r in self.playlist_rows if r.is_checked())
+        n     = sum(1 for r in self.playlist_rows if r.is_checked())
         total = len(self.playlist_rows)
         self.lbl_sel_count.setText(f"{n} / {total} seleccionados")
         self.btn_dl_pl.setEnabled(n > 0)
@@ -674,6 +744,12 @@ class MainWindow(QMainWindow):
         for r in self.playlist_rows: r.set_checked(not r.is_checked())
         self._update_sel_count()
 
+    # ─── Cola de descargas throttled ──────────────────────────────────────
+
+    def _on_concurrent_change(self, value):
+        self._max_concurrent = value
+        self._pump_queue()  # Puede haber slots libres si se sube el límite
+
     def start_download(self):
         if not self.current_info: return
         url = self.url_input.text().strip()
@@ -686,14 +762,46 @@ class MainWindow(QMainWindow):
         self.dl_panel.show()
         for title, u in items:
             task_id = re.sub(r'[^a-zA-Z0-9]', '_', u)[:40]
-            if task_id in self.download_cards: continue
+            if task_id in self.download_cards:
+                continue
+            # Crear tarjeta visible inmediatamente
             card = DownloadCard(task_id, title)
             self.download_cards[task_id] = card
             self.dl_list_layout.insertWidget(0, card)
-            t = DownloadThread(task_id, u, self.selected_fmt, self.selected_quality)
+            # Añadir a la cola
+            self._download_queue.append((task_id, title, u))
+
+        self._pump_queue()
+        self._update_queue_label()
+
+    def _pump_queue(self):
+        """Lanza descargas hasta llenar los slots disponibles."""
+        while self._download_queue and len(self._active_threads) < self._max_concurrent:
+            task_id, title, url = self._download_queue.popleft()
+            card = self.download_cards.get(task_id)
+            if card:
+                card.set_starting()
+            t = DownloadThread(task_id, url, self.selected_fmt, self.selected_quality)
             t.progress.connect(self._on_dl_progress)
             t.finished.connect(self._on_dl_finished)
-            t.start(); self.active_threads.append(t)
+            t.start()
+            self._active_threads[task_id] = t
+        self._update_queue_label()
+
+    def _update_queue_label(self):
+        active = len(self._active_threads)
+        queued = len(self._download_queue)
+        if active == 0 and queued == 0:
+            self.lbl_queue_info.setText("")
+            return
+        parts = []
+        if active:  parts.append(f"{active} activa{'s' if active!=1 else ''}")
+        if queued:  parts.append(f"{queued} en cola")
+        self.lbl_queue_info.setText("  ·  ".join(parts))
+        # Actualizar etiqueta de posición en cola
+        for i, (tid, _, _) in enumerate(self._download_queue):
+            c = self.download_cards.get(tid)
+            if c: c.set_queued(i + 1)
 
     def _on_dl_progress(self, task_id, pct, speed, status):
         card = self.download_cards.get(task_id)
@@ -704,6 +812,24 @@ class MainWindow(QMainWindow):
         if card:
             if ok: card.set_done()
             else:  card.set_error(msg)
+        # Mover el thread a la lista de limpieza
+        t = self._active_threads.pop(task_id, None)
+        if t:
+            self._finished_threads.append(t)
+        # Lanzar siguiente en cola
+        self._pump_queue()
+
+    def _gc_threads(self):
+        """Libera threads que ya terminaron para no acumularlos en memoria."""
+        still_alive = []
+        for t in self._finished_threads:
+            if t.isFinished():
+                t.deleteLater()
+            else:
+                still_alive.append(t)
+        self._finished_threads = still_alive
+
+    # ─── Resto de lógica ──────────────────────────────────────────────────
 
     def reset(self):
         self.url_input.clear()
@@ -718,9 +844,8 @@ class MainWindow(QMainWindow):
         else:                 subprocess.run(['xdg-open', DOWNLOAD_DIR])
 
     def _load_thumb(self, url):
-        self.net_mgr = QNetworkAccessManager(self)
-        self.net_mgr.finished.connect(self._on_thumb)
-        self.net_mgr.get(QNetworkRequest(QUrl(url)))
+        """Un solo net_mgr reutilizable — sin memory leaks."""
+        self._net_mgr.get(QNetworkRequest(QUrl(url)))
 
     def _on_thumb(self, reply):
         pix = QPixmap(); pix.loadFromData(bytes(reply.readAll()))
@@ -728,12 +853,12 @@ class MainWindow(QMainWindow):
             pix = pix.scaled(148, 84, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                              Qt.TransformationMode.SmoothTransformation)
             self.thumb_label.setPixmap(pix); self.thumb_label.setText("")
+        reply.deleteLater()
 
     def _select_fmt(self, fmt):
         self.selected_fmt = fmt
         self.btn_mp4.setStyleSheet(self._pill_ss(fmt=='mp4', gold=False))
         self.btn_mp3.setStyleSheet(self._pill_ss(fmt=='mp3', gold=False))
-        # Mostrar/ocultar calidad
         show = (fmt == 'mp4')
         for i in range(self.qc.count()):
             item = self.qc.itemAt(i)
