@@ -8,9 +8,10 @@ from collections import deque
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QLabel, QProgressBar,
-    QScrollArea, QFrame, QCheckBox, QSizePolicy, QSpinBox, QMessageBox
+    QScrollArea, QFrame, QCheckBox, QSizePolicy, QSpinBox, QMessageBox,
+    QComboBox, QFileDialog
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QTimer, QSettings
 from PyQt6.QtGui import (
     QFont, QColor, QPalette, QPixmap, QIcon, QPainter,
     QBrush, QImage, QPolygon
@@ -428,12 +429,15 @@ class DownloadThread(QThread):
     progress = pyqtSignal(str, float, str, str)
     finished = pyqtSignal(str, bool, str)
 
-    def __init__(self, task_id, url, fmt, quality):
+    def __init__(self, task_id, url, fmt, quality, output_dir, audio_quality, speed_limit):
         super().__init__()
         self.task_id = task_id
         self.url     = url
         self.fmt     = fmt
         self.quality = quality
+        self.output_dir = output_dir
+        self.audio_quality = audio_quality
+        self.speed_limit = speed_limit
         self._pause  = False
 
     def request_pause(self):
@@ -471,10 +475,22 @@ class DownloadThread(QThread):
                 'trim_file_name': 150,
                 **get_cookie_option(),
             }
+            if self.speed_limit > 0:
+                base['ratelimit'] = self.speed_limit * 1024
             ffmpeg = find_ffmpeg()
-            outtmpl = os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s')
+            outtmpl = os.path.join(self.output_dir, '%(title)s.%(ext)s')
 
-            if self.fmt == 'mp3':
+            if self.fmt in ('m4a', 'opus'):
+                # Descarga la pista original sin conversión ni ffmpeg.
+                # Mantener el selector estricto para respetar el formato elegido.
+                selector = ('bestaudio[ext=m4a]' if self.fmt == 'm4a'
+                            else 'bestaudio[acodec^=opus]')
+                base.update({
+                    'format': selector,
+                    'outtmpl': outtmpl,
+                    'postprocessors': [],
+                })
+            elif self.fmt == 'mp3':
                 if ffmpeg:
                     # Con ffmpeg: conversión real a MP3
                     base.update({
@@ -484,7 +500,7 @@ class DownloadThread(QThread):
                         'postprocessors': [{
                             'key': 'FFmpegExtractAudio',
                             'preferredcodec': 'mp3',
-                            'preferredquality': '192'
+                            'preferredquality': str(self.audio_quality)
                         }],
                     })
                 else:
@@ -721,16 +737,28 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YT Downloader")
-        self.setMinimumSize(700, 560)
+        self.setMinimumSize(750, 560)
         self.resize(750, 720)
         self._set_icon()
         self._apply_palette()
 
+        self.settings = QSettings("YTDownloader", "YTDownloader")
+        saved_dir = self.settings.value("output_dir", DOWNLOAD_DIR, type=str)
+        self.output_dir = saved_dir if os.path.isdir(saved_dir) else DOWNLOAD_DIR
+        os.makedirs(self.output_dir, exist_ok=True)
+
         self.current_info     = None
         self.download_cards   = {}
         self.playlist_rows    = []
-        self.selected_fmt     = 'mp4'
-        self.selected_quality = 'best'
+        self.selected_fmt     = self.settings.value("format", "mp4", type=str)
+        if self.selected_fmt not in ('mp4', 'mp3', 'm4a', 'opus'):
+            self.selected_fmt = 'mp4'
+        self.selected_quality = self.settings.value("video_quality", "best", type=str)
+        if self.selected_quality not in ('best', '1080', '720', '480'):
+            self.selected_quality = 'best'
+        self.audio_quality = self.settings.value("audio_quality", 192, type=int)
+        if self.audio_quality not in (128, 192, 320):
+            self.audio_quality = 192
 
         # ── Cola de descargas (throttled) ──────────────────────────────
         self._download_queue:   deque = deque()   # task_id en espera
@@ -739,7 +767,12 @@ class MainWindow(QMainWindow):
         self._seq               = 0
         self._active_threads:   dict  = {}        # task_id → DownloadThread
         self._finished_threads: list  = []        # threads terminados para liberar
-        self._max_concurrent    = DEFAULT_CONCURRENT
+        self._max_concurrent    = self.settings.value(
+            "max_concurrent", DEFAULT_CONCURRENT, type=int)
+        self._max_concurrent = max(1, min(MAX_CONCURRENT, self._max_concurrent))
+        self.speed_limit = self.settings.value("speed_limit_kbps", 0, type=int)
+        self.speed_limit = max(0, min(102400, self.speed_limit))
+        self._closing           = False
 
         # Limpieza periódica de threads terminados (cada 5 s)
         self._gc_timer = QTimer(self)
@@ -885,11 +918,16 @@ class MainWindow(QMainWindow):
         fl = QLabel("Formato"); fl.setFont(QFont("Segoe UI", 8))
         fl.setStyleSheet(f"color: {C_MUTED};"); fc.addWidget(fl)
         fp = QHBoxLayout(); fp.setSpacing(7)
-        self.btn_mp4 = self._pill("MP4 — Video", active=True)
-        self.btn_mp3 = self._pill("MP3 — Audio", active=False)
+        self.btn_mp4 = self._pill("MP4", active=self.selected_fmt == 'mp4')
+        self.btn_mp3 = self._pill("MP3", active=self.selected_fmt == 'mp3')
+        self.btn_m4a = self._pill("M4A", active=self.selected_fmt == 'm4a')
+        self.btn_opus = self._pill("Opus", active=self.selected_fmt == 'opus')
         self.btn_mp4.clicked.connect(lambda: self._select_fmt('mp4'))
         self.btn_mp3.clicked.connect(lambda: self._select_fmt('mp3'))
-        fp.addWidget(self.btn_mp4); fp.addWidget(self.btn_mp3); fp.addStretch()
+        self.btn_m4a.clicked.connect(lambda: self._select_fmt('m4a'))
+        self.btn_opus.clicked.connect(lambda: self._select_fmt('opus'))
+        fp.addWidget(self.btn_mp4); fp.addWidget(self.btn_mp3)
+        fp.addWidget(self.btn_m4a); fp.addWidget(self.btn_opus); fp.addStretch()
         fc.addLayout(fp); inner.addLayout(fc)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.VLine)
@@ -902,7 +940,7 @@ class MainWindow(QMainWindow):
         qp = QHBoxLayout(); qp.setSpacing(7)
         self.quality_pills = []
         for label, val in [("Mejor","best"),("1080p","1080"),("720p","720"),("480p","480")]:
-            b = self._pill(label, active=(val=="best"), gold=True)
+            b = self._pill(label, active=(val == self.selected_quality), gold=True)
             b.setProperty("quality", val)
             b.clicked.connect(self._on_quality)
             self.quality_pills.append(b); qp.addWidget(b)
@@ -918,7 +956,7 @@ class MainWindow(QMainWindow):
         cl.setStyleSheet(f"color: {C_MUTED};"); cc.addWidget(cl)
         self.spin_concurrent = QSpinBox()
         self.spin_concurrent.setRange(1, MAX_CONCURRENT)
-        self.spin_concurrent.setValue(DEFAULT_CONCURRENT)
+        self.spin_concurrent.setValue(self._max_concurrent)
         self.spin_concurrent.setFixedWidth(60)
         self.spin_concurrent.setFixedHeight(30)
         self.spin_concurrent.setStyleSheet(f"""
@@ -932,16 +970,80 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.spin_concurrent.valueChanged.connect(self._on_concurrent_change)
-        hint = QLabel("(1–5 recomendado)")
+        hint = QLabel("(1–5)")
         hint.setFont(QFont("Segoe UI", 7))
         hint.setStyleSheet(f"color: {C_MUTED};")
         cc.addWidget(self.spin_concurrent)
         cc.addWidget(hint)
         inner.addLayout(cc)
 
+        # Preferencias adicionales persistentes
+        prefs = QHBoxLayout(); prefs.setSpacing(14)
+
+        folder_box = QVBoxLayout(); folder_box.setSpacing(5)
+        folder_lbl = QLabel("Carpeta de destino"); folder_lbl.setFont(QFont("Segoe UI", 8))
+        folder_lbl.setStyleSheet(f"color: {C_MUTED};")
+        self.lbl_output_dir = QLabel(self.output_dir)
+        self.lbl_output_dir.setFont(QFont("Segoe UI", 8))
+        self.lbl_output_dir.setStyleSheet(f"color: {C_TEXT};")
+        self.lbl_output_dir.setMaximumWidth(280)
+        self.lbl_output_dir.setWordWrap(True)
+        self.lbl_output_dir.setToolTip(self.output_dir)
+        self.lbl_output_dir.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.btn_folder = self._btn_ghost("Cambiar carpeta")
+        self.btn_folder.clicked.connect(self._choose_output_dir)
+        folder_box.addWidget(folder_lbl)
+        folder_box.addWidget(self.lbl_output_dir)
+        folder_box.addWidget(self.btn_folder)
+        prefs.addLayout(folder_box, 2)
+
+        audio_box = QVBoxLayout(); audio_box.setSpacing(5)
+        audio_lbl = QLabel("Calidad MP3"); audio_lbl.setFont(QFont("Segoe UI", 8))
+        audio_lbl.setStyleSheet(f"color: {C_MUTED};")
+        self.combo_audio_quality = QComboBox()
+        self.combo_audio_quality.setFixedHeight(30)
+        self.combo_audio_quality.setStyleSheet(f"""
+            QComboBox {{ background: {C_SURF2}; border: 1px solid {C_BORDER};
+                border-radius: 7px; color: {C_TEXT}; padding: 0 8px; }}
+            QComboBox QAbstractItemView {{ background: {C_SURF2}; color: {C_TEXT};
+                selection-background-color: {C_SURF3}; }}
+        """)
+        for bitrate in (128, 192, 320):
+            self.combo_audio_quality.addItem(f"{bitrate} kbps", bitrate)
+        audio_index = self.combo_audio_quality.findData(self.audio_quality)
+        self.combo_audio_quality.setCurrentIndex(max(0, audio_index))
+        self.combo_audio_quality.currentIndexChanged.connect(self._on_audio_quality)
+        audio_hint = QLabel("Requiere ffmpeg")
+        audio_hint.setFont(QFont("Segoe UI", 7)); audio_hint.setStyleSheet(f"color: {C_MUTED};")
+        audio_box.addWidget(audio_lbl); audio_box.addWidget(self.combo_audio_quality)
+        audio_box.addWidget(audio_hint)
+        prefs.addLayout(audio_box)
+
+        speed_box = QVBoxLayout(); speed_box.setSpacing(5)
+        speed_lbl = QLabel("Límite de velocidad"); speed_lbl.setFont(QFont("Segoe UI", 8))
+        speed_lbl.setStyleSheet(f"color: {C_MUTED};")
+        self.spin_speed = QSpinBox()
+        self.spin_speed.setRange(0, 102400)
+        self.spin_speed.setValue(self.speed_limit)
+        self.spin_speed.setSuffix(" KB/s")
+        self.spin_speed.setFixedHeight(30)
+        self.spin_speed.setStyleSheet(f"""
+            QSpinBox {{ background: {C_SURF2}; border: 1px solid {C_BORDER};
+                border-radius: 7px; color: {C_TEXT}; padding: 0 8px; }}
+        """)
+        self.spin_speed.setSpecialValueText("Sin límite")
+        self.spin_speed.setToolTip("0 significa sin límite. El valor se aplica a cada descarga.")
+        self.spin_speed.valueChanged.connect(self._on_speed_change)
+        speed_hint = QLabel("0 = sin límite")
+        speed_hint.setFont(QFont("Segoe UI", 7)); speed_hint.setStyleSheet(f"color: {C_MUTED};")
+        speed_box.addWidget(speed_lbl); speed_box.addWidget(self.spin_speed); speed_box.addWidget(speed_hint)
+        prefs.addLayout(speed_box)
+
         inner.addStretch()
         lay.addLayout(inner)
+        lay.addLayout(prefs)
         self.main_layout.addWidget(card)
+        self._select_fmt(self.selected_fmt)
 
     # ── Info video único ───────────────────────────────────────────────────
     def _build_info_card(self):
@@ -1160,7 +1262,9 @@ class MainWindow(QMainWindow):
             if item.widget(): item.widget().deleteLater()
 
         self.lbl_pl_title.setText(data['title'])
-        self.lbl_pl_count.setText(f"{data['count']} videos")
+        shown = len(data['items'])
+        suffix = f" · mostrando {shown} primeros" if data['count'] > shown else ""
+        self.lbl_pl_count.setText(f"{data['count']} videos{suffix}")
 
         for i, item in enumerate(data['items']):
             row_w = PlaylistRow(i+1, item['title'], item.get('duration', 0), item['url'])
@@ -1203,7 +1307,31 @@ class MainWindow(QMainWindow):
 
     def _on_concurrent_change(self, value):
         self._max_concurrent = value
+        self.settings.setValue("max_concurrent", value)
         self._pump_queue()  # Puede haber slots libres si se sube el límite
+
+    def _on_speed_change(self, value):
+        self.speed_limit = value
+        self.settings.setValue("speed_limit_kbps", value)
+
+    def _on_audio_quality(self, _index):
+        self.audio_quality = int(self.combo_audio_quality.currentData())
+        self.settings.setValue("audio_quality", self.audio_quality)
+
+    def _choose_output_dir(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Elegir carpeta de descarga", self.output_dir)
+        if not folder:
+            return
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            QMessageBox.warning(self, "Carpeta no disponible", str(e))
+            return
+        self.output_dir = folder
+        self.settings.setValue("output_dir", folder)
+        self.lbl_output_dir.setText(folder)
+        self.lbl_output_dir.setToolTip(folder)
 
     def start_download(self):
         if not self.current_info: return
@@ -1215,9 +1343,12 @@ class MainWindow(QMainWindow):
             items = [(self.current_info['title'], self.current_info.get('url') or url)]
         if not items: return
 
-        fmt, q = self.selected_fmt, self.selected_quality
+        fmt = self.selected_fmt
+        q = str(self.audio_quality) if fmt == 'mp3' else self.selected_quality
         if fmt == 'mp3':
-            tag = 'MP3' if find_ffmpeg() else 'M4A'
+            tag = 'MP3' if find_ffmpeg() else 'AUDIO ORIGINAL'
+        elif fmt in ('m4a', 'opus'):
+            tag = fmt.upper()
         else:
             tag = 'MP4' + ('' if q == 'best' else f' {q}p')
 
@@ -1236,7 +1367,13 @@ class MainWindow(QMainWindow):
                 continue
             self._seq += 1
             task_id = f"{re.sub(r'[^a-zA-Z0-9]', '_', u)[:30]}_{fmt}_{q}_{self._seq}"
-            self._tasks[task_id] = {'title': title, 'url': u, 'fmt': fmt, 'quality': q}
+            self._tasks[task_id] = {
+                'title': title, 'url': u, 'fmt': fmt, 'quality': q,
+                'video_quality': self.selected_quality,
+                'audio_quality': self.audio_quality,
+                'output_dir': self.output_dir,
+                'speed_limit': self.speed_limit,
+            }
             card = DownloadCard(task_id, title, tag)
             card.action_clicked.connect(self.toggle_task)
             self.download_cards[task_id] = card
@@ -1266,6 +1403,8 @@ class MainWindow(QMainWindow):
 
     def _pump_queue(self):
         """Lanza descargas hasta llenar los slots disponibles."""
+        if self._closing:
+            return
         while self._download_queue and len(self._active_threads) < self._max_concurrent:
             task_id = self._download_queue.popleft()
             task = self._tasks[task_id]
@@ -1273,7 +1412,9 @@ class MainWindow(QMainWindow):
             if card:
                 card.set_running()
                 card.set_starting()
-            t = DownloadThread(task_id, task['url'], task['fmt'], task['quality'])
+            t = DownloadThread(
+                task_id, task['url'], task['fmt'], task['video_quality'],
+                task['output_dir'], task['audio_quality'], task['speed_limit'])
             t.progress.connect(self._on_dl_progress)
             t.finished.connect(self._on_dl_finished)
             t.start()
@@ -1316,9 +1457,13 @@ class MainWindow(QMainWindow):
         self._pump_queue()
 
     def closeEvent(self, event):
+        self._closing = True
         threads = list(self._active_threads.values())
         for t in threads: t.request_pause()
-        for t in threads: t.wait(4000)
+        # No destruir la ventana mientras un QThread sigue usando la aplicación.
+        for t in threads:
+            while not t.wait(100):
+                QApplication.processEvents()
         event.accept()
 
     def _gc_threads(self):
@@ -1341,9 +1486,9 @@ class MainWindow(QMainWindow):
 
     def open_folder(self):
         sn = platform.system()
-        if sn == 'Darwin':    subprocess.run(['open', DOWNLOAD_DIR])
-        elif sn == 'Windows': subprocess.run(['explorer', DOWNLOAD_DIR])
-        else:                 subprocess.run(['xdg-open', DOWNLOAD_DIR])
+        if sn == 'Darwin':    subprocess.run(['open', self.output_dir])
+        elif sn == 'Windows': subprocess.run(['explorer', self.output_dir])
+        else:                 subprocess.run(['xdg-open', self.output_dir])
 
     def _load_thumb(self, url):
         """Un solo net_mgr reutilizable — sin memory leaks."""
@@ -1359,8 +1504,16 @@ class MainWindow(QMainWindow):
 
     def _select_fmt(self, fmt):
         self.selected_fmt = fmt
+        self.settings.setValue("format", fmt)
         self.btn_mp4.setStyleSheet(self._pill_ss(fmt=='mp4', gold=False))
         self.btn_mp3.setStyleSheet(self._pill_ss(fmt=='mp3', gold=False))
+        self.btn_m4a.setStyleSheet(self._pill_ss(fmt=='m4a', gold=False))
+        self.btn_opus.setStyleSheet(self._pill_ss(fmt=='opus', gold=False))
+        self.combo_audio_quality.setEnabled(fmt == 'mp3' and find_ffmpeg() is not None)
+        if fmt == 'mp3' and find_ffmpeg() is None:
+            self.combo_audio_quality.setToolTip("Instala ffmpeg para convertir y elegir bitrate MP3.")
+        else:
+            self.combo_audio_quality.setToolTip("Bitrate de conversión MP3.")
         show = (fmt == 'mp4')
         for i in range(self.qc.count()):
             item = self.qc.itemAt(i)
@@ -1372,6 +1525,7 @@ class MainWindow(QMainWindow):
 
     def _on_quality(self):
         self.selected_quality = self.sender().property("quality")
+        self.settings.setValue("video_quality", self.selected_quality)
         for p in self.quality_pills:
             p.setStyleSheet(self._pill_ss(p == self.sender(), gold=True))
 

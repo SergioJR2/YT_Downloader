@@ -18,6 +18,11 @@ if errorlevel 1 (
 
 echo  [2/4] Compilando .exe (puede tardar 3-6 minutos)...
 echo.
+echo  Elige el paquete para esta compilacion:
+echo    L = Ligero, sin ffmpeg incluido (MP3 requiere ffmpeg instalado aparte)
+echo    C = Completo, incluye ffmpeg para convertir a MP3
+choice /C LC /N /M "Selecciona L o C: "
+if errorlevel 2 (set "YT_INCLUDE_FFMPEG=1") else (set "YT_INCLUDE_FFMPEG=0")
 python -m PyInstaller YT_Downloader.spec --noconfirm --clean
 if errorlevel 1 (
     echo.

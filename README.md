@@ -21,7 +21,7 @@ El proceso se divide en dos pasos con scripts separados:
 
 ### Paso 1 — Instalar dependencias
 ```
-Doble clic en  instalar_dependencias.bat
+Doble clic en  dependencias.bat
 ```
 Este script:
 - Verifica que Python esté instalado
@@ -56,7 +56,7 @@ No requiere Python, ffmpeg ni permisos de administrador. Crea acceso directo en 
 1. Abre `dist\YT_Downloader.exe` (puedes moverlo donde quieras)
 2. Pega la URL de un video o playlist de YouTube
 3. Haz clic en **Analizar**
-4. Elige formato (MP4 o MP3) y calidad
+4. Elige formato (MP4, MP3, M4A u Opus) y calidad de video
 5. Haz clic en **↓ Descargar**
 
 Las descargas se guardan en:
@@ -76,7 +76,7 @@ Si cierras la app con descargas en curso, se pausan solas y puedes volver a baja
 
 ### Mismo video en varios formatos
 
-Puedes descargar un video como MP4 y después el mismo video como MP3 (o al revés). Cada tarjeta muestra el formato, por ejemplo `[MP4 720p]` o `[MP3]`. Solo se evita duplicar una descarga idéntica que siga activa, en cola o pausada.
+Puedes descargar un video como MP4 y después el mismo video como MP3, M4A u Opus. M4A y Opus se descargan sin conversión y no necesitan ffmpeg. Opus se guarda en su contenedor WebM. MP3 requiere ffmpeg; si no está disponible, la app conserva el audio original sin conversión. Cada tarjeta muestra el formato descargado. Solo se evita duplicar una descarga idéntica que siga activa, en cola o pausada.
 
 ### Botón ⟳ Actualizar
 
@@ -89,7 +89,7 @@ Al terminar, la app ofrece reiniciarse para aplicar la actualización.
 
 ### Descargar playlists
 
-Cuando pegas una URL de playlist, la app muestra la lista completa de videos con checkboxes. Puedes:
+Cuando pegas una URL de playlist, la app muestra hasta 200 videos con checkboxes e indica si hay más elementos. Puedes:
 - Seleccionar / deseleccionar videos individualmente
 - Usar los botones **Todos**, **Ninguno** o **Invertir**
 - Controlar cuántos videos se descargan a la vez (1–5) para no saturar la conexión
@@ -101,11 +101,22 @@ Cuando pegas una URL de playlist, la app muestra la lista completa de videos con
 | Opción | Descripción |
 |--------|-------------|
 | **MP4 — Video** | Video con audio. Calidades: Mejor, 1080p, 720p, 480p |
-| **MP3 — Audio** | Audio. MP3 192 kbps si hay ffmpeg; si no, M4A original sin conversión |
+| **MP3 — Audio** | MP3 con el bitrate elegido si hay ffmpeg; si no, audio original sin conversión |
+| **Calidad MP3** | Seleccionable a 128, 192 o 320 kbps; requiere ffmpeg |
+| **M4A — Audio original** | Descarga directa, sin ffmpeg ni recodificación |
+| **Opus (WebM)** | Descarga directa de audio Opus en contenedor WebM, sin ffmpeg |
+| **Carpeta de destino** | Elige dónde guardar las descargas |
+| **Límite de velocidad** | Sin límite o un máximo en KB/s por descarga |
 | **Pausa / Reanudar** | Botón en cada descarga; retoma desde donde quedó |
-| **Descargas a la vez** | Cuántos videos de la playlist se descargan en paralelo (default: 2) |
+| **Descargas a la vez** | Cuántos videos de la playlist se descargan en paralelo (1–5, default: 2) |
+
+La carpeta, formato, calidades, velocidad máxima y cantidad de descargas simultáneas se guardan para la próxima sesión. La calidad MP3 solo afecta a MP3 convertido; M4A y Opus conservan el audio original.
 
 > **Tip de rendimiento:** Si la computadora se pone lenta durante descargas de playlist, reduce "Descargas a la vez" a 1.
+
+### Compilación ligera o completa
+
+Al compilar, elige **L** para no incluir ffmpeg y reducir el tamaño del ejecutable; MP4/M4A/Opus siguen disponibles y MP3 requiere ffmpeg instalado por separado. Elige **C** para incluir ffmpeg y habilitar conversión a MP3. El tamaño final depende de las versiones de las dependencias.
 
 ---
 
