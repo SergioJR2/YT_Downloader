@@ -1485,18 +1485,23 @@ class MainWindow(QMainWindow):
         self.thumb_label.setText("🎬"); self.thumb_label.setPixmap(QPixmap())
 
     def open_folder(self):
-        folder = os.path.abspath(self.output_dir)
+        folder = os.path.abspath(os.path.expanduser(self.output_dir))
         try:
             os.makedirs(folder, exist_ok=True)
-            sn = platform.system()
+        except OSError as e:
+            QMessageBox.warning(self, "Carpeta no disponible", str(e))
+            return
+
+        sn = platform.system()
+        try:
             if sn == 'Windows':
                 os.startfile(folder)
             elif sn == 'Darwin':
                 subprocess.Popen(['open', folder])
             else:
                 subprocess.Popen(['xdg-open', folder])
-        except (OSError, AttributeError) as e:
-            QMessageBox.warning(self, "No se pudo abrir la carpeta", f"{folder}\n\n{e}")
+        except OSError as e:
+            QMessageBox.warning(self, "No se pudo abrir la carpeta", str(e))
 
     def _load_thumb(self, url):
         """Un solo net_mgr reutilizable — sin memory leaks."""
