@@ -34,7 +34,7 @@ if errorlevel 1 ( echo  [!] Error instalando PyQt6. & pause & exit /b 1 )
 echo      PyQt6 listo.
 
 echo  [*] Instalando yt-dlp...
-python -m pip install yt-dlp --quiet
+python -m pip install -U "yt-dlp[default]" --quiet
 if errorlevel 1 ( echo  [!] Error instalando yt-dlp. & pause & exit /b 1 )
 echo      yt-dlp listo.
 

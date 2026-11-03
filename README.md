@@ -132,6 +132,9 @@ YT_Downloader/
 **"Error al instalar ffmpeg"**
 → Abre una terminal como administrador y ejecuta `winget install ffmpeg`. Si no tienes winget, descarga ffmpeg desde [ffmpeg.org](https://ffmpeg.org/download.html) y agrega la carpeta `bin` a tu variable de entorno PATH.
 
+**"ERROR: This video is not available" (pero el video sí existe)**
+→ Desde noviembre de 2025 YouTube exige que yt-dlp resuelva un desafío en JavaScript. Sin un motor JS (Deno) más el paquete `yt-dlp-ejs`, yt-dlp usa un solo cliente de YouTube y muchos videos fallan con ese mensaje engañoso. La app ya incluye `yt-dlp-ejs` y, si falta el motor JS, ofrece instalar Deno al abrirla (o con el botón **⟳ Actualizar**). Si el video tampoco abre en tu navegador, entonces sí es privado, fue eliminado o está bloqueado en tu país.
+
 **"Error: Sign in to confirm you're not a bot"**
 → YouTube a veces bloquea descargas automatizadas. Espera unos minutos e intenta de nuevo. Si persiste, actualiza yt-dlp: `pip install -U yt-dlp`.
 

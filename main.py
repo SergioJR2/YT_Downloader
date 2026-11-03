@@ -41,7 +41,8 @@ def _activate_updated_libs():
         # Solo vale si fue creada para ESTA versión del .exe (si instalas un .exe
         # nuevo, se descarta y se usa el yt-dlp que trae)
         if (m.get('exe_mtime') == int(os.path.getmtime(sys.executable))
-                and os.path.isdir(os.path.join(m['dir'], 'yt_dlp'))):
+                and (os.path.isdir(os.path.join(m['dir'], 'yt_dlp'))
+                     or os.path.isdir(os.path.join(m['dir'], 'yt_dlp_ejs')))):
             sys.path.insert(0, m['dir'])
     except Exception:
         pass
@@ -71,41 +72,130 @@ def find_ffmpeg():
 
 BROWSERS = ('firefox', 'edge', 'chrome', 'brave')
 
+# ─── Motor JavaScript (necesario para YouTube desde yt-dlp 2025.11) ──────────
+# YouTube obliga a resolver un desafío en JavaScript. Sin un runtime JS (Deno,
+# Node, Bun o QuickJS) yt-dlp se queda con un solo cliente y muchos videos
+# fallan con un engañoso "This video is not available".
+DENO_DIR = os.path.join(LIBS_ROOT, 'deno')
+JS_RUNTIMES = ('deno', 'node', 'bun', 'quickjs')        # orden de prioridad
+_JS_BINARY  = {'deno': 'deno', 'node': 'node', 'bun': 'bun', 'quickjs': 'qjs'}
+
+def _app_dir():
+    return os.path.dirname(sys.executable if getattr(sys, 'frozen', False)
+                           else os.path.abspath(__file__))
+
+def find_js_runtimes():
+    """Devuelve {nombre: {'path': ruta}} de los runtimes JS encontrados:
+    carpeta de la app, Deno instalado por la app, y PATH del sistema."""
+    found = {}
+    exe_ext = '.exe' if os.name == 'nt' else ''
+    local_deno = os.path.join(DENO_DIR, 'deno' + exe_ext)
+    if os.path.isfile(local_deno):
+        found['deno'] = {'path': local_deno}
+    for name in JS_RUNTIMES:
+        if name in found:
+            continue
+        exe = (shutil.which(_JS_BINARY[name], path=_app_dir())
+               or shutil.which(_JS_BINARY[name]))
+        if exe:
+            found[name] = {'path': exe}
+    return found
+
+def has_ejs():
+    try:
+        import yt_dlp_ejs  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+def youtube_opts():
+    """Opciones de yt-dlp para que YouTube funcione: runtime JS + solver EJS."""
+    opts = {}
+    runtimes = find_js_runtimes()
+    if runtimes:
+        opts['js_runtimes'] = runtimes
+    if not has_ejs():
+        # Sin el paquete yt-dlp-ejs, permite bajar el solver desde GitHub
+        opts['remote_components'] = ['ejs:github']
+    return opts
+
+def _raw_err(e):
+    msg = re.sub(r'\x1b\[[0-9;]*m', '', str(e)).strip()
+    return re.sub(r'^(ERROR:\s*)+', '', msg)     # evita "ERROR: ERROR: ..."
+
 def clean_err(e):
     """Quita los códigos de color ANSI y agrega pistas útiles."""
-    msg = re.sub(r'\x1b\[[0-9;]*m', '', str(e)).strip()
-    if 'format is not available' in msg.lower():
-        msg += ('  →  Pulsa "Actualizar" (yt-dlp desactualizado) y reinicia. '
-                'Si es video sin ffmpeg, la actualización también instala imageio-ffmpeg.')
+    msg = _raw_err(e)
+    low = msg.lower()
+    unavailable = ('not available' in low or 'requested format' in low
+                   or 'n challenge' in low or 'signature' in low)
+    if unavailable and not find_js_runtimes():
+        msg += ('\n→ Falta el motor JavaScript (Deno) que YouTube exige ahora. '
+                'Pulsa «Actualizar»: lo instala automáticamente.')
+    elif 'not available' in low and 'format' not in low:
+        msg += ('\n→ Si el video abre en tu navegador, pulsa «Actualizar» y reintenta. '
+                'Si tampoco abre allí, es privado, fue eliminado o está bloqueado '
+                'en tu país.')
+    elif 'format is not available' in low or 'requested format' in low:
+        msg += '\n→ Pulsa «Actualizar» (yt-dlp desactualizado) y reinicia.'
+    elif 'private video' in low:
+        msg += '\n→ El video es privado: solo su dueño puede descargarlo.'
+    elif 'members-only' in low or 'members only' in low:
+        msg += '\n→ Es contenido para miembros del canal: requiere cookies.txt de una cuenta con acceso.'
     return msg
 
 def is_bot_error(e):
-    m = clean_err(e).lower()
+    m = _raw_err(e).lower()
     return 'not a bot' in m or 'sign in' in m or '403' in m
+
+def is_unavailable_error(e):
+    m = _raw_err(e).lower()
+    return any(k in m for k in ('not available', 'requested format',
+                                'n challenge', 'signature', 'unable to extract'))
+
+# Clientes de YouTube a probar si el intento normal falla
+ALT_CLIENTS = ('default', 'tv', 'web_safari', 'mweb')
 
 def run_with_auth_fallback(opts, action):
     """Ejecuta action(ydl). Orden de intentos:
-      1) sin cookies (lo normal)
-      2) con cookies.txt, si existe
-      3) cookies leidas directamente del navegador (Firefox, Edge, Chrome, Brave)
-    Solo pasa al siguiente si YouTube pide login / da 403."""
-    no_cookies = {k: v for k, v in opts.items()
-                  if k not in ('cookiefile', 'cookiesfrombrowser')}
-    attempts = [no_cookies]
+      1) normal (con motor JS)
+      2) otros clientes de YouTube (si el video "no está disponible" / 403)
+      3) con cookies.txt, si existe
+      4) cookies leidas del navegador (solo si YouTube pide login / bot)
+    Si todo falla, se informa el error del PRIMER intento (el más útil)."""
+    clean = {k: v for k, v in opts.items()
+             if k not in ('cookiefile', 'cookiesfrombrowser')}
+    base = {**clean, **youtube_opts()}
+    steps = [('base', base),
+             ('clients', {**base, 'extractor_args':
+                          {'youtube': {'player_client': list(ALT_CLIENTS)}}})]
     if 'cookiefile' in opts:
-        attempts.append(dict(opts))
-    for br in BROWSERS:
-        attempts.append({**no_cookies, 'cookiesfrombrowser': (br,)})
-    last = None
-    for o in attempts:
+        steps.append(('cookiefile', {**base, 'cookiefile': opts['cookiefile']}))
+    steps += [('browser', {**base, 'cookiesfrombrowser': (br,)}) for br in BROWSERS]
+
+    def should_try(kind, err):
+        if err is None:
+            return True
+        if kind in ('clients', 'cookiefile'):
+            return is_unavailable_error(err) or is_bot_error(err)
+        return is_bot_error(err) or 'cookie' in _raw_err(err).lower()   # browser
+
+    first = last = None
+    for kind, o in steps:
+        if not should_try(kind, last):
+            continue
         try:
             with yt_dlp.YoutubeDL(o) as ydl:
                 return action(ydl)
         except Exception as e:
-            last = e
-            if not is_bot_error(e) and 'cookie' not in clean_err(e).lower():
+            if isinstance(e, PauseRequested):
                 raise
-    raise last
+            if first is None:
+                first = e
+                if not (is_unavailable_error(e) or is_bot_error(e)):
+                    raise                     # error real (red, URL...): no insistir
+            last = e
+    raise first
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Descargas_YouTube")
@@ -147,35 +237,81 @@ def _http_get(url, timeout=60):
 def _ver_tuple(v):
     return tuple(int(x) for x in re.findall(r'\d+', v or ''))
 
-def portable_update_ytdlp():
-    """Actualiza yt-dlp SIN pip (para el .exe): descarga el wheel oficial desde
-    PyPI, verifica su SHA-256 y lo extrae en LIBS_ROOT. Devuelve (cambió, mensaje)."""
-    data = json.loads(_http_get('https://pypi.org/pypi/yt-dlp/json'))
-    latest, current = data['info']['version'], ytdlp_version()
-    if _ver_tuple(latest) <= _ver_tuple(current):
-        return False, f"yt-dlp ya está al día (v{current})."
+def _pypi_wheel(pkg):
+    """(última versión, info del wheel py3-none-any) de un paquete en PyPI."""
+    data = json.loads(_http_get(f'https://pypi.org/pypi/{pkg}/json'))
     wheel = next(u for u in data['urls']
                  if u['packagetype'] == 'bdist_wheel' and u['filename'].endswith('py3-none-any.whl'))
+    return data['info']['version'], wheel
+
+def ejs_version():
+    try:
+        import yt_dlp_ejs._version as v
+        return v.__version__
+    except Exception:
+        return None
+
+def _extract_wheel(wheel, target):
     blob = _http_get(wheel['url'], 180)
     if hashlib.sha256(blob).hexdigest() != wheel['digests']['sha256']:
         raise RuntimeError("La descarga está corrupta (el SHA-256 no coincide).")
-    os.makedirs(LIBS_ROOT, exist_ok=True)
-    target = os.path.join(LIBS_ROOT, f'libs_{latest}')
-    shutil.rmtree(target, ignore_errors=True)
     root = os.path.realpath(target) + os.sep
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         for n in z.namelist():   # evita rutas fuera de la carpeta destino
             if not os.path.realpath(os.path.join(target, n)).startswith(root):
                 raise RuntimeError("El paquete descargado no es válido.")
         z.extractall(target)
+
+def portable_update_ytdlp():
+    """Actualiza yt-dlp y yt-dlp-ejs SIN pip (para el .exe): descarga los wheels
+    oficiales desde PyPI, verifica su SHA-256 y los extrae en LIBS_ROOT.
+    Devuelve (cambió, mensaje)."""
+    ytv, ytw = _pypi_wheel('yt-dlp')
+    ejv, ejw = _pypi_wheel('yt-dlp-ejs')
+    cur_yt, cur_ej = ytdlp_version(), ejs_version()
+    need_yt = _ver_tuple(ytv) > _ver_tuple(cur_yt)
+    need_ej = cur_ej is None or _ver_tuple(ejv) > _ver_tuple(cur_ej)
+    if not (need_yt or need_ej):
+        return False, f"yt-dlp ya está al día (v{cur_yt}, ejs v{cur_ej})."
+    os.makedirs(LIBS_ROOT, exist_ok=True)
+    target = os.path.join(LIBS_ROOT, f'libs_{ytv}_{ejv}')
+    shutil.rmtree(target, ignore_errors=True)
+    _extract_wheel(ytw, target)      # se extraen ambos: la carpeta queda completa
+    _extract_wheel(ejw, target)
     with open(LIBS_META, 'w', encoding='utf-8') as f:
-        json.dump({'version': latest, 'dir': target,
+        json.dump({'version': ytv, 'ejs': ejv, 'dir': target,
                    'exe_mtime': int(os.path.getmtime(sys.executable))}, f)
     for d in os.listdir(LIBS_ROOT):   # borra versiones anteriores
         p = os.path.join(LIBS_ROOT, d)
         if d.startswith('libs_') and p != target:
             shutil.rmtree(p, ignore_errors=True)
-    return True, f"yt-dlp actualizado: v{current} → v{latest}."
+    parts = []
+    if need_yt: parts.append(f"yt-dlp: v{cur_yt} → v{ytv}")
+    if need_ej: parts.append(f"yt-dlp-ejs: {'v'+cur_ej if cur_ej else 'no estaba'} → v{ejv}")
+    return True, "Actualizado — " + ";  ".join(parts) + "."
+
+def ensure_js_runtime():
+    """Si no hay ningún motor JavaScript, instala Deno (Windows) en LIBS_ROOT
+    verificando su SHA-256. Devuelve (instalado_ahora, mensaje)."""
+    if find_js_runtimes():
+        return False, "Motor JavaScript: ya disponible."
+    if platform.system() != 'Windows':
+        return False, ("Falta un motor JavaScript. Instala Deno (https://deno.com) "
+                       "o Node 20+ y reinicia la app.")
+    arch = 'aarch64' if platform.machine().upper() in ('ARM64', 'AARCH64') else 'x86_64'
+    name = f'deno-{arch}-pc-windows-msvc.zip'
+    base = 'https://github.com/denoland/deno/releases/latest/download/'
+    m = re.search(r'\b[0-9a-fA-F]{64}\b', _http_get(base + name + '.sha256sum').decode('utf-8', 'ignore'))
+    if not m:
+        raise RuntimeError("No se pudo obtener el SHA-256 de Deno.")
+    blob = _http_get(base + name, 300)
+    if hashlib.sha256(blob).hexdigest().lower() != m.group(0).lower():
+        raise RuntimeError("La descarga de Deno está corrupta (el SHA-256 no coincide).")
+    os.makedirs(DENO_DIR, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(blob)) as z, \
+            open(os.path.join(DENO_DIR, 'deno.exe'), 'wb') as dst:
+        shutil.copyfileobj(z.open('deno.exe'), dst)
+    return True, "Motor JavaScript (Deno) instalado."
 
 def _pkg_version(name):
     try:
@@ -193,17 +329,21 @@ class UpdateThread(QThread):
         try:
             if getattr(sys, 'frozen', False):
                 changed, msg = portable_update_ytdlp()
-                self.done.emit(True, msg + "\nffmpeg: ya va incluido en la app.", changed)
+                js_changed, js_msg = ensure_js_runtime()
+                self.done.emit(True, msg + "\n" + js_msg
+                               + "\nffmpeg: ya va incluido en la app.",
+                               changed or js_changed)
                 return
-            pkgs   = ['yt-dlp', 'imageio-ffmpeg']
+            pkgs   = ['yt-dlp', 'yt-dlp-ejs', 'imageio-ffmpeg']
             before = {p: _pkg_version(p) for p in pkgs}
             flags  = 0x08000000 if platform.system() == 'Windows' else 0  # sin ventana
             base   = [sys.executable, '-m', 'pip', 'install', '-U', '--quiet']
-            r = subprocess.run(base + pkgs, capture_output=True, text=True,
+            r = subprocess.run(base + ['yt-dlp[default]', 'imageio-ffmpeg'],
+                               capture_output=True, text=True,
                                timeout=300, creationflags=flags)
-            if r.returncode != 0:   # imageio-ffmpeg es opcional: reintenta solo yt-dlp
-                r = subprocess.run(base + ['yt-dlp'], capture_output=True, text=True,
-                                   timeout=300, creationflags=flags)
+            if r.returncode != 0:   # imageio-ffmpeg es opcional: reintenta sin él
+                r = subprocess.run(base + ['yt-dlp[default]'], capture_output=True,
+                                   text=True, timeout=300, creationflags=flags)
             if r.returncode != 0:
                 self.done.emit(False, (r.stderr or r.stdout or 'Error desconocido')[-400:], False)
                 return
@@ -218,7 +358,9 @@ class UpdateThread(QThread):
                     lines.append(f"{p}: v{before[p]} → v{a}"); changed = True
                 else:
                     lines.append(f"{p}: ya está al día (v{a})")
-            self.done.emit(True, "\n".join(lines), changed)
+            js_changed, js_msg = ensure_js_runtime()
+            lines.append(js_msg)
+            self.done.emit(True, "\n".join(lines), changed or js_changed)
         except Exception as e:
             self.done.emit(False, str(e), False)
 
@@ -264,6 +406,7 @@ class FetchThread(QThread):
                 )
                 self.result.emit({
                     'type':      'video',
+                    'url':       self.url,
                     'title':     info.get('title', 'Sin título'),
                     'duration':  info.get('duration', 0),
                     'thumbnail': info.get('thumbnail', ''),
@@ -324,6 +467,8 @@ class DownloadThread(QThread):
                 'quiet': True, 'no_warnings': True, 'no_color': True, 'noprogress': True,
                 # Limitar fragmentos simultáneos para reducir uso de red/CPU
                 'concurrent_fragment_downloads': 3,
+                # Títulos larguísimos rompen el límite de ruta de Windows
+                'trim_file_name': 150,
                 **get_cookie_option(),
             }
             ffmpeg = find_ffmpeg()
@@ -635,6 +780,9 @@ class MainWindow(QMainWindow):
         self._build_playlist_card()
         self._build_downloads_panel()
         self.main_layout.addStretch()
+
+        # Si falta el motor JavaScript que YouTube exige, ofrecer instalarlo
+        QTimer.singleShot(600, self._check_js_runtime)
 
     # ── Icono ──────────────────────────────────────────────────────────────
     def _set_icon(self):
@@ -950,6 +1098,7 @@ class MainWindow(QMainWindow):
         url = self.url_input.text().strip()
         if not url: return
         self.lbl_error.hide()
+        self._clear_result()
         self.btn_fetch.setEnabled(False); self.btn_fetch.setText("…")
         self.fetch_thread = FetchThread(url)
         self.fetch_thread.result.connect(self._on_fetch_ok)
@@ -966,9 +1115,27 @@ class MainWindow(QMainWindow):
             self._render_video(data)
             self.pl_card.hide(); self.info_card.show()
 
+    def _clear_result(self):
+        """Oculta el resultado anterior para no descargar un video equivocado."""
+        self.current_info = None
+        self.info_card.hide(); self.pl_card.hide()
+
     def _on_fetch_err(self, msg):
         self.btn_fetch.setEnabled(True); self.btn_fetch.setText("Analizar")
+        self._clear_result()
         self.lbl_error.setText("Error: " + msg); self.lbl_error.show()
+
+    def _check_js_runtime(self):
+        """Al abrir: si falta el motor JavaScript, ofrece instalarlo."""
+        if find_js_runtimes():
+            return
+        r = QMessageBox.question(
+            self, "Falta un componente",
+            "YouTube ahora exige un motor JavaScript (Deno) y sin él muchos "
+            "videos fallan con «This video is not available».\n\n"
+            "¿Descargarlo e instalarlo ahora? (≈ 43 MB, se hace una sola vez)")
+        if r == QMessageBox.StandardButton.Yes:
+            self.update_ytdlp()
 
     def _render_video(self, data):
         self.lbl_badge.setText("▶  VIDEO")
@@ -1044,7 +1211,8 @@ class MainWindow(QMainWindow):
         if self.current_info['type'] == 'playlist':
             items = [(r.title_full, r.url) for r in self.playlist_rows if r.is_checked()]
         else:
-            items = [(self.current_info['title'], url)]
+            # Usa la URL que se ANALIZÓ, no lo que haya en la caja ahora mismo
+            items = [(self.current_info['title'], self.current_info.get('url') or url)]
         if not items: return
 
         fmt, q = self.selected_fmt, self.selected_quality

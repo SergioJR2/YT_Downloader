@@ -10,7 +10,7 @@ echo  ============================================
 echo.
 
 echo  [1/4] Instalando dependencias...
-python -m pip install -U pyinstaller PyQt6 yt-dlp imageio-ffmpeg --quiet
+python -m pip install -U pyinstaller PyQt6 "yt-dlp[default]" imageio-ffmpeg --quiet
 if errorlevel 1 (
     echo  ERROR: Fallo al instalar dependencias.
     pause & exit /b 1
