@@ -6,7 +6,7 @@ color 0B
 echo.
 echo  ╔══════════════════════════════════════════╗
 echo  ║   YT Downloader — Instalador             ║
-echo  ║   Dependencias Python + ffmpeg           ║
+echo  ║   Dependencias Python (sin ffmpeg)       ║
 echo  ╚══════════════════════════════════════════╝
 echo.
 
@@ -24,30 +24,6 @@ if errorlevel 1 (
 for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo      Encontrado: %%v
 echo.
 
-REM ── Verificar / instalar ffmpeg ───────────────────────────────────────────
-echo  [*] Verificando ffmpeg...
-ffmpeg -version >nul 2>&1
-if errorlevel 1 (
-    echo      ffmpeg no encontrado. Intentando instalar con winget...
-    winget install --id Gyan.FFmpeg -e --silent
-    if errorlevel 1 (
-        echo.
-        echo  [!] No se pudo instalar ffmpeg automaticamente.
-        echo      Instalalo manualmente:  winget install ffmpeg
-        echo      O descargalo de:        https://ffmpeg.org/download.html
-        echo      y agrega la carpeta bin a tu PATH.
-        echo.
-        echo      Sin ffmpeg solo podras descargar video MP4.
-        echo      La conversion a MP3 no estara disponible.
-        echo.
-    ) else (
-        echo      ffmpeg instalado correctamente.
-    )
-) else (
-    echo      ffmpeg ya esta instalado.
-)
-echo.
-
 REM ── Instalar paquetes Python ──────────────────────────────────────────────
 echo  [*] Actualizando pip...
 python -m pip install --upgrade pip --quiet
@@ -61,6 +37,10 @@ echo  [*] Instalando yt-dlp...
 python -m pip install yt-dlp --quiet
 if errorlevel 1 ( echo  [!] Error instalando yt-dlp. & pause & exit /b 1 )
 echo      yt-dlp listo.
+
+echo  [*] Instalando imageio-ffmpeg (opcional, para MP3 real)...
+python -m pip install imageio-ffmpeg --quiet
+if errorlevel 1 ( echo      No se pudo instalar; se usara audio M4A. ) else ( echo      imageio-ffmpeg listo. )
 
 echo  [*] Instalando PyInstaller...
 python -m pip install pyinstaller --quiet

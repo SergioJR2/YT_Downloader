@@ -8,7 +8,7 @@ from collections import deque
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QLabel, QProgressBar,
-    QScrollArea, QFrame, QCheckBox, QSizePolicy, QSpinBox
+    QScrollArea, QFrame, QCheckBox, QSizePolicy, QSpinBox, QMessageBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QTimer
 from PyQt6.QtGui import (
@@ -18,7 +18,94 @@ from PyQt6.QtGui import (
 from PyQt6.QtCore import QPoint
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 
+import json
+import io
+import shutil
+import hashlib
+import zipfile
+import tempfile
+import sqlite3
+
+# ─── Dependencias actualizables (funciona también dentro del .exe) ───────────
+# El botón "Actualizar" descarga el yt-dlp más reciente a esta carpeta y la app
+# la usa en lugar de la versión empaquetada en el .exe.
+LIBS_ROOT = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'YT_Downloader')
+LIBS_META = os.path.join(LIBS_ROOT, 'libs_meta.json')
+
+def _activate_updated_libs():
+    if not getattr(sys, 'frozen', False):
+        return
+    try:
+        with open(LIBS_META, encoding='utf-8') as f:
+            m = json.load(f)
+        # Solo vale si fue creada para ESTA versión del .exe (si instalas un .exe
+        # nuevo, se descarta y se usa el yt-dlp que trae)
+        if (m.get('exe_mtime') == int(os.path.getmtime(sys.executable))
+                and os.path.isdir(os.path.join(m['dir'], 'yt_dlp'))):
+            sys.path.insert(0, m['dir'])
+    except Exception:
+        pass
+
+_activate_updated_libs()
 import yt_dlp
+
+def get_cookie_option():
+    """Usa cookies.txt (junto al ejecutable) si existe."""
+    base = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__))
+    cookies_path = os.path.join(base, 'cookies.txt')
+    if os.path.exists(cookies_path):
+        return {'cookiefile': cookies_path}
+    return {}
+
+def find_ffmpeg():
+    """ffmpeg es OPCIONAL. Devuelve su ruta si existe (PATH o paquete
+    imageio-ffmpeg); si no, devuelve None y la app usa formatos nativos."""
+    path = shutil.which('ffmpeg')
+    if path:
+        return path
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+BROWSERS = ('firefox', 'edge', 'chrome', 'brave')
+
+def clean_err(e):
+    """Quita los códigos de color ANSI y agrega pistas útiles."""
+    msg = re.sub(r'\x1b\[[0-9;]*m', '', str(e)).strip()
+    if 'format is not available' in msg.lower():
+        msg += ('  →  Pulsa "Actualizar" (yt-dlp desactualizado) y reinicia. '
+                'Si es video sin ffmpeg, la actualización también instala imageio-ffmpeg.')
+    return msg
+
+def is_bot_error(e):
+    m = clean_err(e).lower()
+    return 'not a bot' in m or 'sign in' in m or '403' in m
+
+def run_with_auth_fallback(opts, action):
+    """Ejecuta action(ydl). Orden de intentos:
+      1) sin cookies (lo normal)
+      2) con cookies.txt, si existe
+      3) cookies leidas directamente del navegador (Firefox, Edge, Chrome, Brave)
+    Solo pasa al siguiente si YouTube pide login / da 403."""
+    no_cookies = {k: v for k, v in opts.items()
+                  if k not in ('cookiefile', 'cookiesfrombrowser')}
+    attempts = [no_cookies]
+    if 'cookiefile' in opts:
+        attempts.append(dict(opts))
+    for br in BROWSERS:
+        attempts.append({**no_cookies, 'cookiesfrombrowser': (br,)})
+    last = None
+    for o in attempts:
+        try:
+            with yt_dlp.YoutubeDL(o) as ydl:
+                return action(ydl)
+        except Exception as e:
+            last = e
+            if not is_bot_error(e) and 'cookie' not in clean_err(e).lower():
+                raise
+    raise last
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Descargas_YouTube")
@@ -42,6 +129,100 @@ C_SUCCESS = "#3dba7a"
 
 
 # ─── Hilos ────────────────────────────────────────────────────────────────────
+
+def ytdlp_version():
+    try:
+        import yt_dlp.version as v
+        return v.__version__
+    except Exception:
+        return '?'
+
+
+def _http_get(url, timeout=60):
+    import urllib.request
+    req = urllib.request.Request(url, headers={'User-Agent': 'YT_Downloader-updater'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+def _ver_tuple(v):
+    return tuple(int(x) for x in re.findall(r'\d+', v or ''))
+
+def portable_update_ytdlp():
+    """Actualiza yt-dlp SIN pip (para el .exe): descarga el wheel oficial desde
+    PyPI, verifica su SHA-256 y lo extrae en LIBS_ROOT. Devuelve (cambió, mensaje)."""
+    data = json.loads(_http_get('https://pypi.org/pypi/yt-dlp/json'))
+    latest, current = data['info']['version'], ytdlp_version()
+    if _ver_tuple(latest) <= _ver_tuple(current):
+        return False, f"yt-dlp ya está al día (v{current})."
+    wheel = next(u for u in data['urls']
+                 if u['packagetype'] == 'bdist_wheel' and u['filename'].endswith('py3-none-any.whl'))
+    blob = _http_get(wheel['url'], 180)
+    if hashlib.sha256(blob).hexdigest() != wheel['digests']['sha256']:
+        raise RuntimeError("La descarga está corrupta (el SHA-256 no coincide).")
+    os.makedirs(LIBS_ROOT, exist_ok=True)
+    target = os.path.join(LIBS_ROOT, f'libs_{latest}')
+    shutil.rmtree(target, ignore_errors=True)
+    root = os.path.realpath(target) + os.sep
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        for n in z.namelist():   # evita rutas fuera de la carpeta destino
+            if not os.path.realpath(os.path.join(target, n)).startswith(root):
+                raise RuntimeError("El paquete descargado no es válido.")
+        z.extractall(target)
+    with open(LIBS_META, 'w', encoding='utf-8') as f:
+        json.dump({'version': latest, 'dir': target,
+                   'exe_mtime': int(os.path.getmtime(sys.executable))}, f)
+    for d in os.listdir(LIBS_ROOT):   # borra versiones anteriores
+        p = os.path.join(LIBS_ROOT, d)
+        if d.startswith('libs_') and p != target:
+            shutil.rmtree(p, ignore_errors=True)
+    return True, f"yt-dlp actualizado: v{current} → v{latest}."
+
+def _pkg_version(name):
+    try:
+        import importlib, importlib.metadata as md
+        importlib.invalidate_caches()
+        return md.version(name)
+    except Exception:
+        return None
+
+
+class UpdateThread(QThread):
+    done = pyqtSignal(bool, str, bool)   # ok, mensaje, requiere_reinicio
+
+    def run(self):
+        try:
+            if getattr(sys, 'frozen', False):
+                changed, msg = portable_update_ytdlp()
+                self.done.emit(True, msg + "\nffmpeg: ya va incluido en la app.", changed)
+                return
+            pkgs   = ['yt-dlp', 'imageio-ffmpeg']
+            before = {p: _pkg_version(p) for p in pkgs}
+            flags  = 0x08000000 if platform.system() == 'Windows' else 0  # sin ventana
+            base   = [sys.executable, '-m', 'pip', 'install', '-U', '--quiet']
+            r = subprocess.run(base + pkgs, capture_output=True, text=True,
+                               timeout=300, creationflags=flags)
+            if r.returncode != 0:   # imageio-ffmpeg es opcional: reintenta solo yt-dlp
+                r = subprocess.run(base + ['yt-dlp'], capture_output=True, text=True,
+                                   timeout=300, creationflags=flags)
+            if r.returncode != 0:
+                self.done.emit(False, (r.stderr or r.stdout or 'Error desconocido')[-400:], False)
+                return
+            lines, changed = [], False
+            for p in pkgs:
+                a = _pkg_version(p)
+                if a is None:
+                    continue
+                if before[p] is None:
+                    lines.append(f"{p}: instalado (v{a})"); changed = True
+                elif a != before[p]:
+                    lines.append(f"{p}: v{before[p]} → v{a}"); changed = True
+                else:
+                    lines.append(f"{p}: ya está al día (v{a})")
+            self.done.emit(True, "\n".join(lines), changed)
+        except Exception as e:
+            self.done.emit(False, str(e), False)
+
+
 class FetchThread(QThread):
     result = pyqtSignal(dict)
     error  = pyqtSignal(str)
@@ -53,12 +234,12 @@ class FetchThread(QThread):
     def run(self):
         try:
             opts = {
-                'quiet': True, 'no_warnings': True,
+                'quiet': True, 'no_warnings': True, 'no_color': True,
                 'extract_flat': 'in_playlist',
-                'extractor_args': {'youtube': ['player_client=android,web']},
+                **get_cookie_option(),
             }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(self.url, download=False)
+            info = run_with_auth_fallback(
+                opts, lambda ydl: ydl.extract_info(self.url, download=False))
 
             if info.get('_type') == 'playlist':
                 entries = info.get('entries', [])
@@ -91,7 +272,13 @@ class FetchThread(QThread):
                     'qualities': [str(h) for h in heights[:5]],
                 })
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(clean_err(e))
+
+
+PAUSED_MSG = '__PAUSED__'
+
+class PauseRequested(Exception):
+    """Se lanza desde el hook de progreso para detener (pausar) una descarga."""
 
 
 class DownloadThread(QThread):
@@ -104,8 +291,16 @@ class DownloadThread(QThread):
         self.url     = url
         self.fmt     = fmt
         self.quality = quality
+        self._pause  = False
+
+    def request_pause(self):
+        """Pausa = detener la descarga conservando el archivo .part.
+        Al reanudar, yt-dlp continúa desde donde quedó."""
+        self._pause = True
 
     def _hook(self, d):
+        if self._pause:
+            raise PauseRequested()
         if d['status'] == 'downloading':
             total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
             dl    = d.get('downloaded_bytes', 0)
@@ -126,38 +321,60 @@ class DownloadThread(QThread):
         try:
             base = {
                 'progress_hooks': [self._hook],
-                'quiet': True, 'no_warnings': True,
-                'extractor_args': {'youtube': ['player_client=android,web']},
+                'quiet': True, 'no_warnings': True, 'no_color': True, 'noprogress': True,
                 # Limitar fragmentos simultáneos para reducir uso de red/CPU
                 'concurrent_fragment_downloads': 3,
+                **get_cookie_option(),
             }
+            ffmpeg = find_ffmpeg()
+            outtmpl = os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s')
+
             if self.fmt == 'mp3':
-                base.update({
-                    'format': 'bestaudio/best',
-                    'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192'
-                    }],
-                })
+                if ffmpeg:
+                    # Con ffmpeg: conversión real a MP3
+                    base.update({
+                        'format': 'bestaudio/best',
+                        'outtmpl': outtmpl,
+                        'ffmpeg_location': ffmpeg,
+                        'postprocessors': [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'mp3',
+                            'preferredquality': '192'
+                        }],
+                    })
+                else:
+                    # Sin ffmpeg: se descarga el audio original (m4a, suena
+                    # en cualquier reproductor) sin ningún post-procesado
+                    base.update({
+                        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+                        'outtmpl': outtmpl,
+                    })
             else:
-                qmap = {
-                    '1080': 'bestvideo[height<=1080]+bestaudio/best',
-                    '720':  'bestvideo[height<=720]+bestaudio/best',
-                    '480':  'bestvideo[height<=480]+bestaudio/best',
-                    'best': 'bestvideo+bestaudio/best',
-                }
-                base.update({
-                    'format': qmap.get(self.quality, 'bestvideo+bestaudio/best'),
-                    'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
-                    'merge_output_format': 'mp4',
-                })
-            with yt_dlp.YoutubeDL(base) as ydl:
-                ydl.download([self.url])
+                h = {'1080': 1080, '720': 720, '480': 480}.get(self.quality)
+                hf = f'[height<={h}]' if h else ''
+                if ffmpeg:
+                    # Con ffmpeg: video + audio por separado y se unen
+                    base.update({
+                        'format': f'bv*{hf}+ba/b{hf}/bv*+ba/b',
+                        'outtmpl': outtmpl,
+                        'ffmpeg_location': ffmpeg,
+                        'merge_output_format': 'mp4',
+                    })
+                else:
+                    # Sin ffmpeg: se prefiere un archivo único (video+audio).
+                    # Se probaron varias opciones; la última es "lo mejor que haya".
+                    base.update({
+                        'format': f'b{hf}[ext=mp4]/b{hf}/b[ext=mp4]/b',
+                        'outtmpl': outtmpl,
+                    })
+
+            run_with_auth_fallback(base, lambda ydl: ydl.download([self.url]))
             self.finished.emit(self.task_id, True, '')
         except Exception as e:
-            self.finished.emit(self.task_id, False, str(e))
+            if self._pause:
+                self.finished.emit(self.task_id, False, PAUSED_MSG)
+            else:
+                self.finished.emit(self.task_id, False, clean_err(e))
 
 
 # ─── Fila de playlist con checkbox ───────────────────────────────────────────
@@ -235,9 +452,13 @@ class PlaylistRow(QWidget):
 
 # ─── Tarjeta de descarga ──────────────────────────────────────────────────────
 class DownloadCard(QFrame):
-    def __init__(self, task_id, title, parent=None):
+    action_clicked = pyqtSignal(str)   # pausar / reanudar / reintentar
+
+    def __init__(self, task_id, title, tag='', parent=None):
         super().__init__(parent)
         self.task_id = task_id
+        if tag:
+            title = f"[{tag}]  {title}"
         self.setStyleSheet(f"""
             QFrame {{
                 background: {C_SURF2};
@@ -282,13 +503,41 @@ class DownloadCard(QFrame):
         self.lbl_pct.setFont(QFont("Consolas", 8))
         self.lbl_pct.setStyleSheet(f"color: {C_MUTED}; background: transparent; border: none;")
         self.lbl_pct.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.btn_action = QPushButton("⏸  Pausar")
+        self.btn_action.setFont(QFont("Segoe UI", 8))
+        self.btn_action.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_action.setFixedHeight(22)
+        self.btn_action.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C_TEXT}; padding: 0 10px;
+                           border: 1px solid {C_BORDER}; border-radius: 6px; }}
+            QPushButton:hover {{ background: {C_SURF3}; border-color: {C_MUTED}; }}
+            QPushButton:disabled {{ color: {C_MUTED}; }}
+        """)
+        self.btn_action.clicked.connect(lambda: self.action_clicked.emit(self.task_id))
         bot.addWidget(self.lbl_speed, 1)
         bot.addWidget(self.lbl_pct)
+        bot.addWidget(self.btn_action)
         lay.addLayout(bot)
 
     def set_queued(self, position):
         self.lbl_status.setText(f"En cola #{position}")
         self.lbl_status.setStyleSheet(f"color: {C_MUTED}; background: transparent; border: none;")
+
+    def set_running(self):
+        self.btn_action.setText("⏸  Pausar"); self.btn_action.setEnabled(True)
+        self.btn_action.show()
+
+    def set_pausing(self):
+        self.btn_action.setEnabled(False)
+        self.lbl_status.setText("Pausando…")
+        self.lbl_status.setStyleSheet(f"color: {C_GOLD}; background: transparent; border: none;")
+
+    def set_paused(self):
+        self.lbl_status.setText("⏸  En pausa")
+        self.lbl_status.setStyleSheet(f"color: {C_GOLD}; background: transparent; border: none;")
+        self.lbl_speed.setText("")
+        self.btn_action.setText("▶  Reanudar"); self.btn_action.setEnabled(True)
+        self.btn_action.show()
 
     def set_starting(self):
         self.lbl_status.setText("Iniciando…")
@@ -304,6 +553,7 @@ class DownloadCard(QFrame):
         self.lbl_status.setStyleSheet(f"color: {color}; background: transparent; border: none;")
 
     def set_done(self):
+        self.btn_action.hide()
         self.bar.setValue(100); self.lbl_pct.setText("100%"); self.lbl_speed.setText("")
         self.lbl_status.setText("✓  Listo")
         self.lbl_status.setStyleSheet(f"color: {C_SUCCESS}; background: transparent; border: none;")
@@ -313,6 +563,8 @@ class DownloadCard(QFrame):
         """)
 
     def set_error(self, msg):
+        self.btn_action.setText("↻  Reintentar"); self.btn_action.setEnabled(True)
+        self.btn_action.show()
         self.lbl_status.setText("✗  Error")
         self.lbl_status.setStyleSheet(f"color: {C_ACCENT}; background: transparent; border: none;")
         self.lbl_speed.setText(msg[:70])
@@ -336,7 +588,10 @@ class MainWindow(QMainWindow):
         self.selected_quality = 'best'
 
         # ── Cola de descargas (throttled) ──────────────────────────────
-        self._download_queue:   deque = deque()   # (task_id, title, url)
+        self._download_queue:   deque = deque()   # task_id en espera
+        self._tasks:            dict  = {}        # task_id → {title,url,fmt,quality}
+        self._stopped:          set   = set()     # task_id en pausa o con error
+        self._seq               = 0
         self._active_threads:   dict  = {}        # task_id → DownloadThread
         self._finished_threads: list  = []        # threads terminados para liberar
         self._max_concurrent    = DEFAULT_CONCURRENT
@@ -432,6 +687,11 @@ class MainWindow(QMainWindow):
         t2.setFont(QFont("Consolas", 9)); t2.setStyleSheet(f"color: {C_MUTED};")
         col.addWidget(t1); col.addWidget(t2)
         row.addLayout(col); row.addStretch()
+        self.btn_update = self._btn_ghost(f"⟳  Actualizar  (v{ytdlp_version()})")
+        self.btn_update.setFixedHeight(34)
+        self.btn_update.setToolTip("Actualiza las dependencias del programa (yt-dlp y ffmpeg).\nSoluciona la mayoría de errores de YouTube.")
+        self.btn_update.clicked.connect(self.update_ytdlp)
+        row.addWidget(self.btn_update)
         self.main_layout.addLayout(row)
 
     # ── URL ────────────────────────────────────────────────────────────────
@@ -656,6 +916,34 @@ class MainWindow(QMainWindow):
         lay.addWidget(btn_f)
         self.dl_panel.hide(); self.main_layout.addWidget(self.dl_panel)
 
+    # ─── Actualizar yt-dlp ───────────────────────────────────────────────
+    def update_ytdlp(self):
+        self.btn_update.setEnabled(False)
+        self.btn_update.setText("Actualizando…")
+        self._upd = UpdateThread()
+        self._upd.done.connect(self._on_update_done)
+        self._upd.start()
+
+    def _on_update_done(self, ok, msg, restart):
+        self.btn_update.setEnabled(True)
+        self.btn_update.setText(f"⟳  Actualizar  (v{ytdlp_version()})")
+        if not ok:
+            QMessageBox.warning(self, "Actualización", "No se pudo actualizar:\n\n" + msg)
+            return
+        if not restart:
+            QMessageBox.information(self, "Actualización", msg)
+            return
+        r = QMessageBox.question(
+            self, "Actualización",
+            msg + "\n\nPara aplicar los cambios hay que reiniciar la app. ¿Reiniciar ahora?")
+        if r == QMessageBox.StandardButton.Yes:
+            env = {**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'}
+            args = ([sys.executable] + sys.argv[1:]) if getattr(sys, 'frozen', False) \
+                   else ([sys.executable] + sys.argv)
+            subprocess.Popen(args, env=env)
+            self.close()
+            QApplication.quit()
+
     # ─── Lógica de fetch ──────────────────────────────────────────────────
 
     def fetch_info(self):
@@ -759,29 +1047,65 @@ class MainWindow(QMainWindow):
             items = [(self.current_info['title'], url)]
         if not items: return
 
+        fmt, q = self.selected_fmt, self.selected_quality
+        if fmt == 'mp3':
+            tag = 'MP3' if find_ffmpeg() else 'M4A'
+        else:
+            tag = 'MP4' + ('' if q == 'best' else f' {q}p')
+
         self.dl_panel.show()
         for title, u in items:
-            task_id = re.sub(r'[^a-zA-Z0-9]', '_', u)[:40]
-            if task_id in self.download_cards:
+            # Solo se ignora si ESTA misma descarga (mismo video + formato +
+            # calidad) sigue activa, en cola o pausada. Una ya terminada, o el
+            # mismo video en otro formato (ej. MP4 y luego MP3), sí se permite.
+            busy = any(
+                t['url'] == u and t['fmt'] == fmt and t['quality'] == q
+                and (tid in self._active_threads or tid in self._download_queue
+                     or tid in self._stopped)
+                for tid, t in self._tasks.items()
+            )
+            if busy:
                 continue
-            # Crear tarjeta visible inmediatamente
-            card = DownloadCard(task_id, title)
+            self._seq += 1
+            task_id = f"{re.sub(r'[^a-zA-Z0-9]', '_', u)[:30]}_{fmt}_{q}_{self._seq}"
+            self._tasks[task_id] = {'title': title, 'url': u, 'fmt': fmt, 'quality': q}
+            card = DownloadCard(task_id, title, tag)
+            card.action_clicked.connect(self.toggle_task)
             self.download_cards[task_id] = card
             self.dl_list_layout.insertWidget(0, card)
-            # Añadir a la cola
-            self._download_queue.append((task_id, title, u))
+            self._download_queue.append(task_id)
 
         self._pump_queue()
         self._update_queue_label()
 
+    def toggle_task(self, task_id):
+        """Botón de la tarjeta: pausar (si descarga o espera) o reanudar/reintentar."""
+        card = self.download_cards.get(task_id)
+        if not card: return
+        if task_id in self._active_threads:
+            self._active_threads[task_id].request_pause()
+            card.set_pausing()
+        elif task_id in self._download_queue:
+            self._download_queue.remove(task_id)
+            self._stopped.add(task_id)
+            card.set_paused()
+            self._update_queue_label()
+        elif task_id in self._stopped:
+            self._stopped.discard(task_id)
+            card.set_running()
+            self._download_queue.appendleft(task_id)
+            self._pump_queue()
+
     def _pump_queue(self):
         """Lanza descargas hasta llenar los slots disponibles."""
         while self._download_queue and len(self._active_threads) < self._max_concurrent:
-            task_id, title, url = self._download_queue.popleft()
+            task_id = self._download_queue.popleft()
+            task = self._tasks[task_id]
             card = self.download_cards.get(task_id)
             if card:
+                card.set_running()
                 card.set_starting()
-            t = DownloadThread(task_id, url, self.selected_fmt, self.selected_quality)
+            t = DownloadThread(task_id, task['url'], task['fmt'], task['quality'])
             t.progress.connect(self._on_dl_progress)
             t.finished.connect(self._on_dl_finished)
             t.start()
@@ -799,7 +1123,7 @@ class MainWindow(QMainWindow):
         if queued:  parts.append(f"{queued} en cola")
         self.lbl_queue_info.setText("  ·  ".join(parts))
         # Actualizar etiqueta de posición en cola
-        for i, (tid, _, _) in enumerate(self._download_queue):
+        for i, tid in enumerate(self._download_queue):
             c = self.download_cards.get(tid)
             if c: c.set_queued(i + 1)
 
@@ -810,14 +1134,24 @@ class MainWindow(QMainWindow):
     def _on_dl_finished(self, task_id, ok, msg):
         card = self.download_cards.get(task_id)
         if card:
-            if ok: card.set_done()
-            else:  card.set_error(msg)
+            if ok:
+                card.set_done()
+            elif msg == PAUSED_MSG:
+                self._stopped.add(task_id); card.set_paused()
+            else:
+                self._stopped.add(task_id); card.set_error(msg)
         # Mover el thread a la lista de limpieza
         t = self._active_threads.pop(task_id, None)
         if t:
             self._finished_threads.append(t)
         # Lanzar siguiente en cola
         self._pump_queue()
+
+    def closeEvent(self, event):
+        threads = list(self._active_threads.values())
+        for t in threads: t.request_pause()
+        for t in threads: t.wait(4000)
+        event.accept()
 
     def _gc_threads(self):
         """Libera threads que ya terminaron para no acumularlos en memoria."""

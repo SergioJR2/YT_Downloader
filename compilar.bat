@@ -4,77 +4,54 @@ title YT Downloader - Compilador
 color 0A
 
 echo.
-echo  ╔══════════════════════════════════════════╗
-echo  ║   YT Downloader — Generador de .EXE     ║
-echo  ╚══════════════════════════════════════════╝
+echo  ============================================
+echo   YT Downloader ESCRITORIO - Generador .EXE
+echo  ============================================
 echo.
 
-REM ── Verificar que las dependencias estén instaladas ───────────────────────
-echo  [*] Verificando dependencias...
-python -m pip show pyinstaller >nul 2>&1
+echo  [1/4] Instalando dependencias...
+python -m pip install -U pyinstaller PyQt6 yt-dlp imageio-ffmpeg --quiet
 if errorlevel 1 (
-    echo.
-    echo  [!] PyInstaller no encontrado.
-    echo      Ejecuta primero:  instalar_dependencias.bat
-    echo.
+    echo  ERROR: Fallo al instalar dependencias.
     pause & exit /b 1
 )
-python -m pip show PyQt6 >nul 2>&1
-if errorlevel 1 (
-    echo.
-    echo  [!] PyQt6 no encontrado.
-    echo      Ejecuta primero:  instalar_dependencias.bat
-    echo.
-    pause & exit /b 1
-)
-echo      Dependencias OK.
-echo.
 
-REM ── Limpiar compilaciones anteriores ─────────────────────────────────────
-echo  [*] Limpiando builds anteriores...
-if exist build   rmdir /s /q build
-if exist dist    rmdir /s /q dist
-echo      Listo.
-echo.
-
-REM ── Compilar ──────────────────────────────────────────────────────────────
-echo  [*] Compilando .exe (puede tardar 3-6 minutos)...
-echo      No cierres esta ventana.
+echo  [2/4] Compilando .exe (puede tardar 3-6 minutos)...
 echo.
 python -m PyInstaller YT_Downloader.spec --noconfirm --clean
 if errorlevel 1 (
     echo.
-    echo  ╔══════════════════════════════════════════╗
-    echo  ║   ERROR: Fallo al compilar.              ║
-    echo  ║   Revisa los mensajes de arriba.         ║
-    echo  ╚══════════════════════════════════════════╝
-    echo.
+    echo  ERROR: Fallo al compilar.
     pause & exit /b 1
 )
 
-REM ── Limpiar temporales ────────────────────────────────────────────────────
 echo.
-echo  [*] Limpiando archivos temporales...
-if exist build rmdir /s /q build
-echo      Listo.
-echo.
+echo  [3/4] Limpiando temporales...
+rmdir /s /q build 2>nul
 
-REM ── Verificar que el .exe existe ─────────────────────────────────────────
-if not exist "dist\YT_Downloader.exe" (
-    echo  [!] No se encontro el .exe en dist\. Algo salio mal.
-    pause & exit /b 1
+echo.
+echo  [4/4] Creando instalador (Setup)...
+set "ISCC="
+if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+if defined ISCC (
+    "%ISCC%" instalador.iss
+    if errorlevel 1 (
+        echo  ERROR: Fallo al crear el instalador.
+    ) else (
+        echo.
+        echo  Instalador listo: instalador\YT_Downloader_Setup.exe
+    )
+) else (
+    echo  Inno Setup no esta instalado: se omite el instalador.
+    echo  Para crearlo instala Inno Setup 6 ^(winget install JRSoftware.InnoSetup^)
+    echo  y ejecuta compilar.bat otra vez.
 )
 
-echo  ╔══════════════════════════════════════════╗
-echo  ║   COMPILACION EXITOSA                    ║
-echo  ║                                          ║
-echo  ║   Archivo:  dist\YT_Downloader.exe       ║
-echo  ║                                          ║
-echo  ║   Puedes mover ese .exe a cualquier      ║
-echo  ║   carpeta o escritorio y ejecutarlo.     ║
-echo  ╚══════════════════════════════════════════╝
 echo.
-
-REM ── Abrir carpeta dist automáticamente ───────────────────────────────────
-explorer dist
+echo  ============================================
+echo   LISTO!  dist\YT_Downloader.exe
+echo  ============================================
+echo.
 pause

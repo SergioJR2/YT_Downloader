@@ -10,9 +10,8 @@ Aplicación de escritorio para Windows que descarga videos y audios de YouTube s
 |-----------|---------------|
 | **Windows 10 / 11** | — |
 | **Python 3.8 o superior** | [python.org/downloads](https://www.python.org/downloads/) — marcar ✅ *Add Python to PATH* |
-| **ffmpeg** *(solo para MP3)* | `winget install ffmpeg` en la terminal |
 
-> Si solo vas a descargar videos MP4, ffmpeg es opcional.
+> **ffmpeg ya no es necesario.** Sin él, el audio se guarda en M4A (calidad original) y el video en MP4 de hasta 720p. Si `imageio-ffmpeg` está instalado (lo hace `dependencias.bat`) o ffmpeg está en el PATH, se activa MP3 real y video hasta 1080p+.
 
 ---
 
@@ -45,6 +44,13 @@ Este script:
 
 ---
 
+### Paso 3 (opcional) — Crear el instalador
+Instala [Inno Setup 6](https://jrsoftware.org/isdl.php) (`winget install JRSoftware.InnoSetup`) y vuelve a ejecutar `compilar.bat`.
+Además del .exe generará `instalador\YT_Downloader_Setup.exe`: un solo archivo que puedes copiar a cualquier PC con Windows 10/11.
+No requiere Python, ffmpeg ni permisos de administrador. Crea acceso directo en el menú inicio/escritorio y desinstalador.
+
+---
+
 ## Uso
 
 1. Abre `dist\YT_Downloader.exe` (puedes moverlo donde quieras)
@@ -57,6 +63,29 @@ Las descargas se guardan en:
 ```
 C:\Users\TU_USUARIO\Descargas_YouTube\
 ```
+
+### Pausar, reanudar y reintentar
+
+Cada descarga tiene su propio botón:
+
+- **⏸ Pausar** detiene la descarga (también si todavía está en cola). Lo descargado se conserva.
+- **▶ Reanudar** continúa desde donde quedó, no desde cero.
+- **↻ Reintentar** aparece si hubo un error.
+
+Si cierras la app con descargas en curso, se pausan solas y puedes volver a bajarlas después (retoma el archivo parcial).
+
+### Mismo video en varios formatos
+
+Puedes descargar un video como MP4 y después el mismo video como MP3 (o al revés). Cada tarjeta muestra el formato, por ejemplo `[MP4 720p]` o `[MP3]`. Solo se evita duplicar una descarga idéntica que siga activa, en cola o pausada.
+
+### Botón ⟳ Actualizar
+
+Actualiza las dependencias del programa (yt-dlp y ffmpeg) y es lo primero que conviene probar si YouTube empieza a fallar:
+
+- **Con `py main.py`:** usa pip para actualizar `yt-dlp` e `imageio-ffmpeg`.
+- **Con el .exe instalado:** descarga el yt-dlp más reciente desde PyPI (verifica su SHA-256) y lo guarda en `%LOCALAPPDATA%\YT_Downloader`. No hace falta reinstalar ni recompilar. Si más adelante instalas un .exe nuevo, esa copia se descarta y se usa la que trae el .exe.
+
+Al terminar, la app ofrece reiniciarse para aplicar la actualización.
 
 ### Descargar playlists
 
@@ -72,7 +101,8 @@ Cuando pegas una URL de playlist, la app muestra la lista completa de videos con
 | Opción | Descripción |
 |--------|-------------|
 | **MP4 — Video** | Video con audio. Calidades: Mejor, 1080p, 720p, 480p |
-| **MP3 — Audio** | Solo audio en 192 kbps. Requiere ffmpeg |
+| **MP3 — Audio** | Audio. MP3 192 kbps si hay ffmpeg; si no, M4A original sin conversión |
+| **Pausa / Reanudar** | Botón en cada descarga; retoma desde donde quedó |
 | **Descargas a la vez** | Cuántos videos de la playlist se descargan en paralelo (default: 2) |
 
 > **Tip de rendimiento:** Si la computadora se pone lenta durante descargas de playlist, reduce "Descargas a la vez" a 1.
@@ -119,3 +149,15 @@ YT_Downloader/
 - [PyQt6](https://pypi.org/project/PyQt6/) — interfaz gráfica
 - [PyInstaller](https://pyinstaller.org/) — empaquetado en .exe
 - [ffmpeg](https://ffmpeg.org/) — conversión de audio
+
+---
+
+## Crear un instalador (Setup.exe)
+
+Para instalar la app en cualquier PC con Windows (sin Python ni nada):
+
+1. Instala Inno Setup una sola vez: `winget install JRSoftware.InnoSetup`
+2. Doble clic en `compilar.bat` (compila el .exe y crea el instalador en el mismo paso)
+3. Obtendrás `instalador\YT_Downloader_Setup.exe`. Ese único archivo es el que compartes e instalas en otras PCs.
+
+El instalador crea acceso directo en el menú Inicio (y opcionalmente en el escritorio) y un desinstalador. **No** incluye tu `cookies.txt`.

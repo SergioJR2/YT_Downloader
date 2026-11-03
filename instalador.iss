@@ -1,0 +1,42 @@
+; Instalador de YT Downloader (Inno Setup 6.3 o superior)
+; Se genera con:  ISCC.exe instalador.iss   (lo hace compilar.bat automaticamente)
+
+#define AppName    "YT Downloader"
+#define AppVersion "1.0.0"
+#define AppExe     "YT_Downloader.exe"
+
+[Setup]
+AppId={{1451D9FC-3017-4A67-8DDC-EC6544EDEEAD}
+AppName={#AppName}
+AppVersion={#AppVersion}
+DefaultDirName={autopf}\{#AppName}
+DefaultGroupName={#AppName}
+; Instalacion por usuario: no pide permisos de administrador
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+OutputDir=instalador
+OutputBaseFilename=YT_Downloader_Setup
+SetupIconFile=icon.ico
+UninstallDisplayIcon={app}\{#AppExe}
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+
+[Languages]
+Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "Crear acceso directo en el escritorio"; GroupDescription: "Accesos directos:"
+
+[Files]
+Source: "dist\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
+Name: "{group}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#AppExe}"; Description: "Abrir {#AppName}"; Flags: nowait postinstall skipifsilent
