@@ -42,6 +42,9 @@ echo  [*] Instalando imageio-ffmpeg (opcional, para MP3 real)...
 python -m pip install imageio-ffmpeg --quiet
 if errorlevel 1 ( echo      No se pudo instalar; se usara audio M4A. ) else ( echo      imageio-ffmpeg listo. )
 
+echo  [*] Instalando psutil (cierre limpio de ffmpeg)...
+python -m pip install psutil --quiet
+if errorlevel 1 ( echo      No se pudo instalar psutil; opcional. ) else ( echo      psutil listo. )
 echo  [*] Instalando PyInstaller...
 python -m pip install pyinstaller --quiet
 if errorlevel 1 ( echo  [!] Error instalando PyInstaller. & pause & exit /b 1 )

@@ -107,6 +107,7 @@ Cuando pegas una URL de playlist, la app muestra hasta 200 videos con checkboxes
 | **Opus (WebM)** | Descarga directa de audio Opus en contenedor WebM, sin ffmpeg |
 | **Carpeta de destino** | Elige dónde guardar las descargas |
 | **Límite de velocidad** | Sin límite o un máximo en KB/s por descarga |
+| **Omitir ffmpeg** | Descarga MP4 como archivo único y guarda MP3 como audio original M4A; M4A y Opus siempre funcionan sin ffmpeg |
 | **Pausa / Reanudar** | Botón en cada descarga; retoma desde donde quedó |
 | **Descargas a la vez** | Cuántos videos de la playlist se descargan en paralelo (1–5, default: 2) |
 
@@ -142,6 +143,18 @@ YT_Downloader/
 
 **"Error al instalar ffmpeg"**
 → Abre una terminal como administrador y ejecuta `winget install ffmpeg`. Si no tienes winget, descarga ffmpeg desde [ffmpeg.org](https://ffmpeg.org/download.html) y agrega la carpeta `bin` a tu variable de entorno PATH.
+
+**"[WinError 5] Acceso denegado" al terminar una descarga o conversión**
+→ Otro programa (casi siempre el antivirus de Windows escaneando el archivo recién creado, o OneDrive) lo tiene abierto justo cuando la app intenta renombrarlo. La app ya espera y reintenta sola hasta 4 veces. Si aun así se repite, pulsa **Reintentar** (lo ya descargado se conserva) o agrega la carpeta de descargas como exclusión en *Seguridad de Windows → Protección contra virus → Exclusiones*.
+
+**"HTTP Error 416: Requested range not satisfiable"**
+→ El archivo parcial guardado ya no coincide con el video. La app ahora vuelve a intentar esa descarga desde cero; si falla de nuevo, pulsa **Reintentar**.
+
+**"Failed to remove temporary directory _MEI..." al cerrar el .exe**
+→ Una versión anterior del ejecutable dejó un proceso hijo usando archivos temporales. Vuelve a compilar e instalar el ejecutable actual; ahora incluye `psutil` para terminar esos procesos al cerrar.
+
+**"ModuleNotFoundError: No module named 'PyQt6'" al ejecutar `main.py`**
+→ Estás usando un Python distinto al que instaló las dependencias (por ejemplo, el botón ▷ de VS Code usa otro intérprete). Ejecuta con el mismo Python que usó `dependencias.bat`: `python main.py` (o `py -3.12 main.py`), o elige el intérprete correcto en VS Code (*Ctrl+Shift+P → Python: Select Interpreter*).
 
 **"ERROR: This video is not available" (pero el video sí existe)**
 → Desde noviembre de 2025 YouTube exige que yt-dlp resuelva un desafío en JavaScript. Sin un motor JS (Deno) más el paquete `yt-dlp-ejs`, yt-dlp usa un solo cliente de YouTube y muchos videos fallan con ese mensaje engañoso. La app ya incluye `yt-dlp-ejs` y, si falta el motor JS, ofrece instalar Deno al abrirla (o con el botón **⟳ Actualizar**). Si el video tampoco abre en tu navegador, entonces sí es privado, fue eliminado o está bloqueado en tu país.

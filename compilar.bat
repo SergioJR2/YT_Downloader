@@ -10,7 +10,7 @@ echo  ============================================
 echo.
 
 echo  [1/4] Instalando dependencias...
-python -m pip install -U pyinstaller PyQt6 "yt-dlp[default]" imageio-ffmpeg --quiet
+python -m pip install -U pyinstaller PyQt6 "yt-dlp[default]" imageio-ffmpeg psutil --quiet
 if errorlevel 1 (
     echo  ERROR: Fallo al instalar dependencias.
     pause & exit /b 1
@@ -23,6 +23,12 @@ echo    L = Ligero, sin ffmpeg incluido (MP3 requiere ffmpeg instalado aparte)
 echo    C = Completo, incluye ffmpeg para convertir a MP3
 choice /C LC /N /M "Selecciona L o C: "
 if errorlevel 2 (set "YT_INCLUDE_FFMPEG=1") else (set "YT_INCLUDE_FFMPEG=0")
+if not exist "YT_Downloader.spec" (
+    echo.
+    echo  ERROR: No se encuentra YT_Downloader.spec en esta carpeta.
+    echo  Restauralo desde el repositorio ^(git checkout YT_Downloader.spec^) o descargalo de nuevo.
+    pause & exit /b 1
+)
 python -m PyInstaller YT_Downloader.spec --noconfirm --clean
 if errorlevel 1 (
     echo.

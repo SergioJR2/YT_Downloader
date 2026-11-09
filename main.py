@@ -128,6 +128,14 @@ def clean_err(e):
     """Quita los códigos de color ANSI y agrega pistas útiles."""
     msg = _raw_err(e)
     low = msg.lower()
+    if any(k in low for k in ('httpsconnectionpool', 'httpconnectionpool', 'read timed out',
+                              'connection aborted', 'connection reset', 'remote end closed',
+                              'incompleteread', 'getaddrinfo', 'timed out')):
+        return ('Se interrumpió la conexión con YouTube. Pulsa «Reintentar»: '
+                'continúa desde donde quedó.\n' + msg)
+    if '416' in low and 'range' in low:
+        return ('YouTube rechazó reanudar el archivo parcial. Se intentó reiniciar la '
+                'descarga desde cero; pulsa «Reintentar» si volvió a fallar.\n' + msg)
     unavailable = ('not available' in low or 'requested format' in low
                    or 'n challenge' in low or 'signature' in low)
     if unavailable and not find_js_runtimes():
@@ -139,11 +147,55 @@ def clean_err(e):
                 'en tu país.')
     elif 'format is not available' in low or 'requested format' in low:
         msg += '\n→ Pulsa «Actualizar» (yt-dlp desactualizado) y reinicia.'
+    elif is_file_lock_error(e):
+        msg += ('\n→ Otro programa (antivirus, OneDrive, reproductor) tiene el archivo '
+                'bloqueado. Pulsa «Reintentar»; si se repite, excluye la carpeta de '
+                'descargas en Windows Defender.')
     elif 'private video' in low:
         msg += '\n→ El video es privado: solo su dueño puede descargarlo.'
     elif 'members-only' in low or 'members only' in low:
         msg += '\n→ Es contenido para miembros del canal: requiere cookies.txt de una cuenta con acceso.'
     return msg
+
+# ─── Archivo bloqueado (antivirus, indexador, OneDrive...) ───────────────────
+# Windows impide renombrar/reemplazar un archivo mientras otro proceso lo tiene
+# abierto. Tras terminar una descarga o conversión es común que Defender lo esté
+# escaneando justo en ese instante: el error desaparece si se espera un poco.
+LOCK_RETRIES     = 4      # reintentos extra tras un bloqueo
+LOCK_RETRY_DELAY = 2      # segundos; crece 2, 4, 6, 8
+_LOCK_HINTS = ('winerror 5', 'winerror 32', 'acceso denegado', 'access is denied',
+               'permission denied', 'used by another process', 'otro proceso',
+               'unable to rename file', 'unable to remove file')
+
+def is_file_lock_error(e):
+    if isinstance(e, PermissionError):
+        return True
+    return any(h in _raw_err(e).lower() for h in _LOCK_HINTS)
+
+def is_http_416_error(e):
+    """Un 416 al reanudar suele indicar que el .part no coincide con el archivo remoto."""
+    if getattr(e, 'code', None) == 416 or getattr(e, 'status', None) == 416:
+        return True
+    msg = _raw_err(e).lower()
+    return '416' in msg and ('range' in msg or 'requested range' in msg)
+
+def kill_child_processes():
+    """Termina los procesos hijos de la app (ffmpeg, deno...). Si uno sigue vivo al
+    cerrar, bloquea la carpeta temporal _MEI del .exe y Windows muestra
+    "Failed to remove temporary directory". Requiere psutil (opcional)."""
+    try:
+        import psutil
+        kids = psutil.Process().children(recursive=True)
+        for k in kids:
+            try: k.terminate()
+            except Exception: pass
+        _, alive = psutil.wait_procs(kids, timeout=2)
+        for k in alive:
+            try: k.kill()
+            except Exception: pass
+        return len(kids)
+    except Exception:
+        return 0
 
 def is_bot_error(e):
     m = _raw_err(e).lower()
@@ -429,7 +481,8 @@ class DownloadThread(QThread):
     progress = pyqtSignal(str, float, str, str)
     finished = pyqtSignal(str, bool, str)
 
-    def __init__(self, task_id, url, fmt, quality, output_dir, audio_quality, speed_limit):
+    def __init__(self, task_id, url, fmt, quality, output_dir, audio_quality, speed_limit,
+                 use_ffmpeg=True):
         super().__init__()
         self.task_id = task_id
         self.url     = url
@@ -438,6 +491,7 @@ class DownloadThread(QThread):
         self.output_dir = output_dir
         self.audio_quality = audio_quality
         self.speed_limit = speed_limit
+        self.use_ffmpeg = use_ffmpeg
         self._pause  = False
 
     def request_pause(self):
@@ -452,7 +506,9 @@ class DownloadThread(QThread):
             total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
             dl    = d.get('downloaded_bytes', 0)
             speed = d.get('speed', 0) or 0
-            pct   = (dl / total * 100) if total else 0
+            # El total estimado puede quedarse corto; reserva el 100% para cuando
+            # yt-dlp confirme que acabó de recibir el archivo.
+            pct   = min(dl / total * 100, 99) if total else 0
             self.progress.emit(self.task_id, pct, self._fmt_speed(speed), 'downloading')
         elif d['status'] == 'finished':
             self.progress.emit(self.task_id, 100, '', 'processing')
@@ -475,9 +531,19 @@ class DownloadThread(QThread):
                 'trim_file_name': 150,
                 **get_cookie_option(),
             }
+            # Renombrados internos de yt-dlp (.part → final): más intentos y con espera
+            base['file_access_retries'] = 10
+            # Cortes de red: más reintentos, esperando entre ellos (por defecto yt-dlp
+            # reintenta 10 veces SIN pausa y se rinde en segundos)
+            base['socket_timeout'] = 30
+            base['retries'] = 15
+            base['fragment_retries'] = 15
+            _wait = lambda n: min(2 * (n + 1), 10)
+            base['retry_sleep_functions'] = {'file_access': _wait,
+                                             'http': _wait, 'fragment': _wait}
             if self.speed_limit > 0:
                 base['ratelimit'] = self.speed_limit * 1024
-            ffmpeg = find_ffmpeg()
+            ffmpeg = find_ffmpeg() if self.use_ffmpeg else None
             outtmpl = os.path.join(self.output_dir, '%(title)s.%(ext)s')
 
             if self.fmt in ('m4a', 'opus'):
@@ -529,7 +595,31 @@ class DownloadThread(QThread):
                         'outtmpl': outtmpl,
                     })
 
-            run_with_auth_fallback(base, lambda ydl: ydl.download([self.url]))
+            fresh_retry_used = False
+            lock_retries = 0
+            while True:
+                try:
+                    run_with_auth_fallback(base, lambda ydl: ydl.download([self.url]))
+                    break
+                except Exception as e:
+                    if (not self._pause and not fresh_retry_used
+                            and is_http_416_error(e)):
+                        # El enlace o el .part guardado ya no coincide. yt-dlp
+                        # volverá a extraer la URL y sobrescribirá el parcial desde cero.
+                        base['continuedl'] = False
+                        fresh_retry_used = True
+                        continue
+                    if (self._pause or lock_retries >= LOCK_RETRIES
+                            or not is_file_lock_error(e)):
+                        raise
+                    lock_retries += 1
+                    # Archivo bloqueado: espera y reintenta. Lo ya descargado se
+                    # conserva, así que el reintento solo repite el último paso.
+                    self.progress.emit(self.task_id, 100, '', 'processing')
+                    for _ in range(int(LOCK_RETRY_DELAY * lock_retries * 10)):
+                        if self._pause:
+                            raise
+                        self.msleep(100)
             self.finished.emit(self.task_id, True, '')
         except Exception as e:
             if self._pause:
@@ -701,6 +791,7 @@ class DownloadCard(QFrame):
         self.btn_action.show()
 
     def set_starting(self):
+        self.lbl_speed.setToolTip("")
         self.lbl_status.setText("Iniciando…")
         self.lbl_status.setStyleSheet(f"color: {C_GOLD}; background: transparent; border: none;")
 
@@ -728,7 +819,9 @@ class DownloadCard(QFrame):
         self.btn_action.show()
         self.lbl_status.setText("✗  Error")
         self.lbl_status.setStyleSheet(f"color: {C_ACCENT}; background: transparent; border: none;")
-        self.lbl_speed.setText(msg[:70])
+        first = msg.split('\n')[0]
+        self.lbl_speed.setText(first if len(first) <= 95 else first[:92] + '…')
+        self.lbl_speed.setToolTip(msg)      # el texto completo, al pasar el mouse
         self.lbl_speed.setStyleSheet(f"color: {C_ACCENT}; background: transparent; border: none;")
 
 
@@ -759,6 +852,9 @@ class MainWindow(QMainWindow):
         self.audio_quality = self.settings.value("audio_quality", 192, type=int)
         if self.audio_quality not in (128, 192, 320):
             self.audio_quality = 192
+        self._ffmpeg_available = bool(find_ffmpeg())
+        self.use_ffmpeg = self.settings.value(
+            "use_ffmpeg", self._ffmpeg_available, type=bool) and self._ffmpeg_available
 
         # ── Cola de descargas (throttled) ──────────────────────────────
         self._download_queue:   deque = deque()   # task_id en espera
@@ -928,7 +1024,22 @@ class MainWindow(QMainWindow):
         self.btn_opus.clicked.connect(lambda: self._select_fmt('opus'))
         fp.addWidget(self.btn_mp4); fp.addWidget(self.btn_mp3)
         fp.addWidget(self.btn_m4a); fp.addWidget(self.btn_opus); fp.addStretch()
-        fc.addLayout(fp); inner.addLayout(fc)
+        fc.addLayout(fp)
+        self.chk_no_ffmpeg = QCheckBox("Omitir ffmpeg")
+        self.chk_no_ffmpeg.setChecked(not self.use_ffmpeg)
+        self.chk_no_ffmpeg.setEnabled(self._ffmpeg_available)
+        self.chk_no_ffmpeg.setToolTip(
+            "MP4 usará un formato directo (hasta 720p) y MP3 guardará el audio original M4A. "
+            "M4A y Opus siempre se descargan sin ffmpeg.")
+        self.chk_no_ffmpeg.setStyleSheet(f"color: {C_TEXT};")
+        self.chk_no_ffmpeg.toggled.connect(self._on_ffmpeg_mode_change)
+        fc.addWidget(self.chk_no_ffmpeg)
+        self.ffmpeg_mode_hint = QLabel("")
+        self.ffmpeg_mode_hint.setFont(QFont("Segoe UI", 7))
+        self.ffmpeg_mode_hint.setStyleSheet(f"color: {C_MUTED};")
+        self.ffmpeg_mode_hint.setWordWrap(True)
+        fc.addWidget(self.ffmpeg_mode_hint)
+        inner.addLayout(fc)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.VLine)
         sep.setStyleSheet(f"color: {C_BORDER};"); inner.addWidget(sep)
@@ -1318,6 +1429,11 @@ class MainWindow(QMainWindow):
         self.audio_quality = int(self.combo_audio_quality.currentData())
         self.settings.setValue("audio_quality", self.audio_quality)
 
+    def _on_ffmpeg_mode_change(self, omit_ffmpeg):
+        self.use_ffmpeg = self._ffmpeg_available and not omit_ffmpeg
+        self.settings.setValue("use_ffmpeg", self.use_ffmpeg)
+        self._select_fmt(self.selected_fmt)
+
     def _choose_output_dir(self):
         folder = QFileDialog.getExistingDirectory(
             self, "Elegir carpeta de descarga", self.output_dir)
@@ -1345,8 +1461,9 @@ class MainWindow(QMainWindow):
 
         fmt = self.selected_fmt
         q = str(self.audio_quality) if fmt == 'mp3' else self.selected_quality
+        use_ffmpeg = self.use_ffmpeg and self._ffmpeg_available
         if fmt == 'mp3':
-            tag = 'MP3' if find_ffmpeg() else 'AUDIO ORIGINAL'
+            tag = 'MP3' if use_ffmpeg else 'AUDIO ORIGINAL'
         elif fmt in ('m4a', 'opus'):
             tag = fmt.upper()
         else:
@@ -1373,6 +1490,7 @@ class MainWindow(QMainWindow):
                 'audio_quality': self.audio_quality,
                 'output_dir': self.output_dir,
                 'speed_limit': self.speed_limit,
+                'use_ffmpeg': use_ffmpeg,
             }
             card = DownloadCard(task_id, title, tag)
             card.action_clicked.connect(self.toggle_task)
@@ -1414,7 +1532,8 @@ class MainWindow(QMainWindow):
                 card.set_starting()
             t = DownloadThread(
                 task_id, task['url'], task['fmt'], task['video_quality'],
-                task['output_dir'], task['audio_quality'], task['speed_limit'])
+                task['output_dir'], task['audio_quality'], task['speed_limit'],
+                task.get('use_ffmpeg', self.use_ffmpeg))
             t.progress.connect(self._on_dl_progress)
             t.finished.connect(self._on_dl_finished)
             t.start()
@@ -1461,9 +1580,16 @@ class MainWindow(QMainWindow):
         threads = list(self._active_threads.values())
         for t in threads: t.request_pause()
         # No destruir la ventana mientras un QThread sigue usando la aplicación.
+        waited = 0
         for t in threads:
             while not t.wait(100):
                 QApplication.processEvents()
+                waited += 100
+                # Una conversión (ffmpeg) no se puede pausar: pasados 3 s se cierra
+                # el proceso para que la app termine limpia.
+                if waited >= 3000 and waited % 1000 == 0:
+                    kill_child_processes()
+        kill_child_processes()
         event.accept()
 
     def _gc_threads(self):
@@ -1522,11 +1648,19 @@ class MainWindow(QMainWindow):
         self.btn_mp3.setStyleSheet(self._pill_ss(fmt=='mp3', gold=False))
         self.btn_m4a.setStyleSheet(self._pill_ss(fmt=='m4a', gold=False))
         self.btn_opus.setStyleSheet(self._pill_ss(fmt=='opus', gold=False))
-        self.combo_audio_quality.setEnabled(fmt == 'mp3' and find_ffmpeg() is not None)
-        if fmt == 'mp3' and find_ffmpeg() is None:
-            self.combo_audio_quality.setToolTip("Instala ffmpeg para convertir y elegir bitrate MP3.")
+        can_convert = self.use_ffmpeg and self._ffmpeg_available
+        self.combo_audio_quality.setEnabled(fmt == 'mp3' and can_convert)
+        if fmt == 'mp3' and not can_convert:
+            self.combo_audio_quality.setToolTip(
+                "Sin conversión: se guarda el audio original (normalmente M4A).")
         else:
             self.combo_audio_quality.setToolTip("Bitrate de conversión MP3.")
+        if not self._ffmpeg_available:
+            self.ffmpeg_mode_hint.setText("Sin ffmpeg: MP4 usa un formato directo; MP3 guarda el audio original.")
+        elif self.use_ffmpeg:
+            self.ffmpeg_mode_hint.setText("MP4 puede combinar video y audio; MP3 se convierte al bitrate elegido.")
+        else:
+            self.ffmpeg_mode_hint.setText("MP4 usa un formato directo (hasta 720p); MP3 guarda audio M4A original.")
         show = (fmt == 'mp4')
         for i in range(self.qc.count()):
             item = self.qc.itemAt(i)
