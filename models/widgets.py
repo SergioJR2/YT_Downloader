@@ -98,6 +98,7 @@ class PlaylistRow(QWidget):
 
 class DownloadCard(QFrame):
     action_clicked = pyqtSignal(str)   # pausar / reanudar / reintentar
+    remove_clicked = pyqtSignal(str)
 
     def __init__(self, task_id, title, tag='', parent=None):
         super().__init__(parent)
@@ -159,9 +160,24 @@ class DownloadCard(QFrame):
             QPushButton:disabled {{ color: {C_MUTED}; }}
         """)
         self.btn_action.clicked.connect(lambda: self.action_clicked.emit(self.task_id))
+        self.btn_remove = QPushButton("✕")
+        self.btn_remove.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        self.btn_remove.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_remove.setFixedSize(28, 22)
+        self.btn_remove.setToolTip("Quitar de la lista (no borra el archivo)")
+        self.btn_remove.setAccessibleName("Quitar descarga de la lista")
+        self.btn_remove.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C_MUTED};
+                border: 1px solid {C_BORDER}; border-radius: 6px; }}
+            QPushButton:hover {{ color: {C_ACCENT}; border-color: {C_ACCENT};
+                background: rgba(230,61,61,0.12); }}
+            QPushButton:disabled {{ color: {C_MUTED}; }}
+        """)
+        self.btn_remove.clicked.connect(lambda: self.remove_clicked.emit(self.task_id))
         bot.addWidget(self.lbl_speed, 1)
         bot.addWidget(self.lbl_pct)
         bot.addWidget(self.btn_action)
+        bot.addWidget(self.btn_remove)
         lay.addLayout(bot)
 
     def set_queued(self, position):
@@ -175,6 +191,12 @@ class DownloadCard(QFrame):
     def set_pausing(self):
         self.btn_action.setEnabled(False)
         self.lbl_status.setText("Pausando…")
+        self.lbl_status.setStyleSheet(f"color: {C_GOLD}; background: transparent; border: none;")
+
+    def set_removing(self):
+        self.btn_action.setEnabled(False)
+        self.btn_remove.setEnabled(False)
+        self.lbl_status.setText("Deteniendo para quitar…")
         self.lbl_status.setStyleSheet(f"color: {C_GOLD}; background: transparent; border: none;")
 
     def set_paused(self):

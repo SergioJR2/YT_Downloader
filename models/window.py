@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .config import DEFAULT_CONCURRENT, DOWNLOAD_DIR, MAX_CONCURRENT
+from .downloads import download_name_key, existing_download_names
 from .errors import PAUSED_MSG
 from .runtime import find_ffmpeg, find_js_runtimes, kill_child_processes
 from .services import ytdlp_version
@@ -61,6 +62,7 @@ class MainWindow(WindowViewMixin, QMainWindow):
         self._download_queue:   deque = deque()   # task_id en espera
         self._tasks:            dict  = {}        # task_id → {title,url,fmt,quality}
         self._stopped:          set   = set()     # task_id en pausa o con error
+        self._remove_when_stopped: set = set()    # tareas activas que se quitarán al pausar
         self._seq               = 0
         self._active_threads:   dict  = {}        # task_id → DownloadThread
         self._finished_threads: list  = []        # threads terminados para liberar
@@ -262,11 +264,42 @@ class MainWindow(WindowViewMixin, QMainWindow):
         else:
             tag = 'MP4' + ('' if q == 'best' else f' {q}p')
 
-        self.dl_panel.show()
+        media_kind = 'video' if fmt == 'mp4' else 'audio'
+        try:
+            existing_names = existing_download_names(self.output_dir, media_kind)
+        except OSError as e:
+            QMessageBox.warning(
+                self, "No se pudo revisar la carpeta",
+                f"No se puede comprobar si ya existen esos archivos:\n\n{e}")
+            return
+
+        # Reserva nombres de tareas activas, en cola, pausadas o fallidas para que
+        # dos archivos del mismo tipo con el mismo título no colisionen.
+        active_ids = set(self._active_threads) | set(self._download_queue) | self._stopped
+        output_dir_key = os.path.normcase(os.path.abspath(self.output_dir))
+        reserved_names = {
+            (('video' if task['fmt'] == 'mp4' else 'audio'),
+             download_name_key(task['title']))
+            for task_id, task in self._tasks.items()
+            if task_id in active_ids
+            and os.path.normcase(os.path.abspath(task['output_dir'])) == output_dir_key
+        }
+        skipped_existing = []
+        skipped_reserved = []
+        enqueued = 0
         for title, u in items:
-            # Solo se ignora si ESTA misma descarga (mismo video + formato +
-            # calidad) sigue activa, en cola o pausada. Una ya terminada, o el
-            # mismo video en otro formato (ej. MP4 y luego MP3), sí se permite.
+            name_key = download_name_key(title)
+            existing_file = existing_names.get(name_key)
+            if existing_file:
+                skipped_existing.append(existing_file)
+                continue
+            reservation = (media_kind, name_key)
+            if reservation in reserved_names:
+                skipped_reserved.append(title)
+                continue
+
+            # Evita encolar de nuevo la misma combinación de video, formato y
+            # calidad si su tarjeta sigue activa, en cola o pausada.
             busy = any(
                 t['url'] == u and t['fmt'] == fmt and t['quality'] == q
                 and (tid in self._active_threads or tid in self._download_queue
@@ -287,12 +320,34 @@ class MainWindow(WindowViewMixin, QMainWindow):
             }
             card = DownloadCard(task_id, title, tag)
             card.action_clicked.connect(self.toggle_task)
+            card.remove_clicked.connect(self.remove_download)
             self.download_cards[task_id] = card
             self.dl_list_layout.insertWidget(0, card)
             self._download_queue.append(task_id)
+            reserved_names.add(reservation)
+            enqueued += 1
 
+        if enqueued:
+            self.dl_panel.show()
         self._pump_queue()
         self._update_queue_label()
+
+        if skipped_existing or skipped_reserved:
+            details = []
+            if skipped_existing:
+                examples = '\n'.join(f"• {name}" for name in skipped_existing[:5])
+                more = (f"\n… y {len(skipped_existing) - 5} más"
+                        if len(skipped_existing) > 5 else "")
+                details.append(
+                    f"{len(skipped_existing)} omitido(s): ya existe un archivo del "
+                    f"mismo tipo con ese nombre.\n{examples}{more}")
+            if skipped_reserved:
+                details.append(
+                    f"{len(skipped_reserved)} omitido(s): ya hay una descarga con "
+                    "ese nombre activa, en cola, pausada o lista para reintentar.")
+            QMessageBox.information(
+                self, "Descargas omitidas",
+                "\n\n".join(details) + f"\n\nCarpeta revisada:\n{self.output_dir}")
 
     def toggle_task(self, task_id):
         """Botón de la tarjeta: pausar (si descarga o espera) o reanudar/reintentar."""
@@ -311,6 +366,33 @@ class MainWindow(WindowViewMixin, QMainWindow):
             card.set_running()
             self._download_queue.appendleft(task_id)
             self._pump_queue()
+
+    def remove_download(self, task_id):
+        """Quita una tarea de la lista; si está activa, la pausa primero."""
+        card = self.download_cards.get(task_id)
+        if not card:
+            return
+        if task_id in self._active_threads:
+            self._remove_when_stopped.add(task_id)
+            card.set_removing()
+            self._active_threads[task_id].request_pause()
+            return
+        if task_id in self._download_queue:
+            self._download_queue.remove(task_id)
+        self._discard_download(task_id)
+        self._pump_queue()
+
+    def _discard_download(self, task_id):
+        """Elimina solo la tarjeta y el estado en memoria, nunca el archivo."""
+        self._remove_when_stopped.discard(task_id)
+        self._stopped.discard(task_id)
+        self._tasks.pop(task_id, None)
+        card = self.download_cards.pop(task_id, None)
+        if card:
+            self.dl_list_layout.removeWidget(card)
+            card.deleteLater()
+        if not self.download_cards:
+            self.dl_panel.hide()
 
     def _pump_queue(self):
         """Lanza descargas hasta llenar los slots disponibles."""
@@ -353,6 +435,8 @@ class MainWindow(WindowViewMixin, QMainWindow):
         if card: card.update_progress(pct, speed, status)
 
     def _on_dl_finished(self, task_id, ok, msg):
+        if task_id in self._remove_when_stopped:
+            self._discard_download(task_id)
         card = self.download_cards.get(task_id)
         if card:
             if ok:

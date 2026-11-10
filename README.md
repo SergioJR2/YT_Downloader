@@ -46,13 +46,14 @@ Este script:
 
 ## Organización del código
 
-`main.py` inicia la aplicación. El resto está separado por responsabilidad dentro de `yt_downloader/`:
+`main.py` inicia la aplicación. El resto está separado por responsabilidad dentro de `models/`:
 
 - `config.py` contiene rutas y valores predeterminados.
 - `runtime.py` localiza ffmpeg, runtimes JavaScript y archivos auxiliares.
 - `services.py` reúne la lógica de yt-dlp, autenticación y actualizaciones.
 - `errors.py` normaliza y clasifica errores.
 - `workers.py` ejecuta análisis, descargas y actualizaciones en hilos.
+- `downloads.py` compara los títulos con nombres de archivos existentes.
 - `widgets.py` define las filas de playlist y las tarjetas de descarga.
 - `view.py` construye las secciones visuales y representa resultados.
 - `window.py` conserva el estado y coordina eventos y descargas.
@@ -89,12 +90,15 @@ Cada descarga tiene su propio botón:
 - **⏸ Pausar** detiene la descarga (también si todavía está en cola). Lo descargado se conserva.
 - **▶ Reanudar** continúa desde donde quedó, no desde cero.
 - **↻ Reintentar** aparece si hubo un error.
+- **✕ Quitar de la lista** elimina la tarjeta, pero no borra archivos descargados. Si está descargando, la pausa y la quita al detenerse; el archivo parcial se conserva.
 
 Si cierras la app con descargas en curso, se pausan solas y puedes volver a bajarlas después (retoma el archivo parcial).
 
-### Mismo video en varios formatos
+### Evitar archivos duplicados
 
-Puedes descargar un video como MP4 y después el mismo video como MP3, M4A u Opus. M4A y Opus se descargan sin conversión y no necesitan ffmpeg. Opus se guarda en su contenedor WebM. MP3 requiere ffmpeg; si no está disponible, la app conserva el audio original sin conversión. Cada tarjeta muestra el formato descargado. Solo se evita duplicar una descarga idéntica que siga activa, en cola o pausada.
+Antes de iniciar una descarga, la app revisa los nombres de audio o video del mismo tipo en la carpeta de destino. Si ya hay un archivo del mismo tipo con ese nombre base, lo omite aunque la extensión sea distinta. Por ejemplo, `Título.mp3` no bloquea la descarga de `Título.mp4`, pero sí evita otra descarga de audio llamada `Título`. La comparación no distingue mayúsculas. También evita poner en cola dos descargas del mismo tipo que producirían el mismo nombre.
+
+M4A y Opus se descargan sin conversión y no necesitan ffmpeg. Opus se guarda en su contenedor WebM. MP3 requiere ffmpeg; si no está disponible, la app conserva el audio original sin conversión. Cada tarjeta muestra el formato descargado.
 
 ### Botón ⟳ Actualizar
 
@@ -124,9 +128,11 @@ Cuando pegas una URL de playlist, la app muestra hasta 200 videos con checkboxes
 | **M4A — Audio original** | Descarga directa, sin ffmpeg ni recodificación |
 | **Opus (WebM)** | Descarga directa de audio Opus en contenedor WebM, sin ffmpeg |
 | **Carpeta de destino** | Elige dónde guardar las descargas |
+| **Evitar duplicados** | Omite títulos existentes del mismo tipo: audio con audio y video con video |
 | **Límite de velocidad** | Sin límite o un máximo en KB/s por descarga |
 | **Omitir ffmpeg** | Descarga MP4 como archivo único y guarda MP3 como audio original M4A; M4A y Opus siempre funcionan sin ffmpeg |
 | **Pausa / Reanudar** | Botón en cada descarga; retoma desde donde quedó |
+| **Quitar de la lista** | Elimina la tarjeta sin borrar el archivo descargado |
 | **Descargas a la vez** | Cuántos videos de la playlist se descargan en paralelo (1–5, default: 2) |
 
 La carpeta, formato, calidades, velocidad máxima y cantidad de descargas simultáneas se guardan para la próxima sesión. La calidad MP3 solo afecta a MP3 convertido; M4A y Opus conservan el audio original.
@@ -143,13 +149,13 @@ Al compilar, elige **L** para no incluir ffmpeg y reducir el tamaño del ejecuta
 
 ```
 YT_Downloader/
-├── main.py                      ← Código fuente principal
+├── main.py
+├── models/                      ← Interfaz, servicios, workers y configuración
 ├── YT_Downloader.spec           ← Configuración de PyInstaller
-├── dependencias.bat    ← Paso 1: instalar todo lo necesario
-├── compilar.bat                 ← Paso 2: generar el .exe
-├── README.md                    ← Este archivo
-└── dist/
-    └── YT_Downloader.exe        ← Ejecutable generado (no incluido en repo)
+├── dependencias.bat
+├── compilar.bat
+├── instalador.iss
+└── README.md
 ```
 
 ---
