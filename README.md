@@ -44,6 +44,24 @@ Este script:
 
 ---
 
+## Organización del código
+
+`main.py` inicia la aplicación. El resto está separado por responsabilidad dentro de `yt_downloader/`:
+
+- `config.py` contiene rutas y valores predeterminados.
+- `runtime.py` localiza ffmpeg, runtimes JavaScript y archivos auxiliares.
+- `services.py` reúne la lógica de yt-dlp, autenticación y actualizaciones.
+- `errors.py` normaliza y clasifica errores.
+- `workers.py` ejecuta análisis, descargas y actualizaciones en hilos.
+- `widgets.py` define las filas de playlist y las tarjetas de descarga.
+- `view.py` construye las secciones visuales y representa resultados.
+- `window.py` conserva el estado y coordina eventos y descargas.
+- `theme.py` mantiene los colores compartidos.
+
+El comando de compilación sigue siendo `compilar.bat`; el `.spec` incluye los módulos del paquete automáticamente.
+
+---
+
 ### Paso 3 (opcional) — Crear el instalador
 Instala [Inno Setup 6](https://jrsoftware.org/isdl.php) (`winget install JRSoftware.InnoSetup`) y vuelve a ejecutar `compilar.bat`.
 Además del .exe generará `instalador\YT_Downloader_Setup.exe`: un solo archivo que puedes copiar a cualquier PC con Windows 10/11.
