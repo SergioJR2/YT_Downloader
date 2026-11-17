@@ -22,7 +22,7 @@ from .config import DEFAULT_CONCURRENT, DOWNLOAD_DIR, MAX_CONCURRENT
 from .downloads import download_name_key, existing_download_names
 from .errors import PAUSED_MSG
 from .runtime import find_ffmpeg, find_js_runtimes, kill_child_processes
-from .services import ytdlp_version
+from .services import set_browser_cookies, ytdlp_version
 from .theme import C_BG, C_BORDER
 from .widgets import DownloadCard
 from .view import WindowViewMixin
@@ -54,6 +54,8 @@ class MainWindow(WindowViewMixin, QMainWindow):
         self.audio_quality = self.settings.value("audio_quality", 192, type=int)
         if self.audio_quality not in (128, 192, 320):
             self.audio_quality = 192
+        self.browser_cookies = self.settings.value("browser_cookies", False, type=bool)
+        set_browser_cookies(self.browser_cookies)
         self._ffmpeg_available = bool(find_ffmpeg())
         self.use_ffmpeg = self.settings.value(
             "use_ffmpeg", self._ffmpeg_available, type=bool) and self._ffmpeg_available
@@ -115,21 +117,6 @@ class MainWindow(WindowViewMixin, QMainWindow):
 
         # Si falta el motor JavaScript que YouTube exige, ofrecer instalarlo
         QTimer.singleShot(600, self._check_js_runtime)
-
-    # ── Icono ──────────────────────────────────────────────────────────────
-
-
-    # ── Encabezado ─────────────────────────────────────────────────────────
-
-    # ── URL ────────────────────────────────────────────────────────────────
-
-    # ── Formato + Calidad ──────────────────────────────────────────────────
-
-    # ── Info video único ───────────────────────────────────────────────────
-
-    # ── Panel playlist ─────────────────────────────────────────────────────
-
-    # ── Panel descargas ─────────────────────────────────────────────────────
 
     # ─── Actualizar yt-dlp ───────────────────────────────────────────────
     def update_ytdlp(self):
@@ -204,11 +191,6 @@ class MainWindow(WindowViewMixin, QMainWindow):
         if r == QMessageBox.StandardButton.Yes:
             self.update_ytdlp()
 
-
-
-
-
-
     # ─── Cola de descargas throttled ──────────────────────────────────────
 
     def _on_concurrent_change(self, value):
@@ -228,6 +210,11 @@ class MainWindow(WindowViewMixin, QMainWindow):
         self.use_ffmpeg = self._ffmpeg_available and not omit_ffmpeg
         self.settings.setValue("use_ffmpeg", self.use_ffmpeg)
         self._select_fmt(self.selected_fmt)
+
+    def _on_browser_cookies_change(self, enabled):
+        self.browser_cookies = enabled
+        self.settings.setValue("browser_cookies", enabled)
+        set_browser_cookies(enabled)
 
     def _choose_output_dir(self):
         folder = QFileDialog.getExistingDirectory(
@@ -410,7 +397,7 @@ class MainWindow(WindowViewMixin, QMainWindow):
                 task['output_dir'], task['audio_quality'], task['speed_limit'],
                 task.get('use_ffmpeg', self.use_ffmpeg))
             t.progress.connect(self._on_dl_progress)
-            t.finished.connect(self._on_dl_finished)
+            t.done.connect(self._on_dl_finished)
             t.start()
             self._active_threads[task_id] = t
         self._update_queue_label()
@@ -480,7 +467,6 @@ class MainWindow(WindowViewMixin, QMainWindow):
         self._finished_threads = still_alive
 
     # ─── Resto de lógica ──────────────────────────────────────────────────
-
 
     def open_folder(self):
         folder = os.path.abspath(os.path.expanduser(self.output_dir))

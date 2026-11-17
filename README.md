@@ -9,7 +9,7 @@ Aplicación de escritorio para Windows que descarga videos y audios de YouTube s
 | Requisito | Cómo obtenerlo |
 |-----------|---------------|
 | **Windows 10 / 11** | — |
-| **Python 3.8 o superior** | [python.org/downloads](https://www.python.org/downloads/) — marcar ✅ *Add Python to PATH* |
+| **Python 3.10 o superior** | [python.org/downloads](https://www.python.org/downloads/) — marcar ✅ *Add Python to PATH* |
 
 > **ffmpeg ya no es necesario.** Sin él, el audio se guarda en M4A (calidad original) y el video en MP4 de hasta 720p. Si `imageio-ffmpeg` está instalado (lo hace `dependencias.bat`) o ffmpeg está en el PATH, se activa MP3 real y video hasta 1080p+.
 
@@ -25,8 +25,10 @@ Doble clic en  dependencias.bat
 ```
 Este script:
 - Verifica que Python esté instalado
-- Intenta instalar ffmpeg automáticamente con `winget`
 - Instala PyQt6, yt-dlp y PyInstaller vía pip
+- Instala `imageio-ffmpeg` (ffmpeg opcional, para MP3 real) y `psutil` (cierre limpio de procesos hijos)
+
+Las mismas dependencias de ejecución están en `requirements.txt` (`pip install -r requirements.txt`); `requirements-dev.txt` añade pytest y PyInstaller.
 
 Solo necesitas hacerlo **una vez** (o cuando actualices dependencias).
 
@@ -35,7 +37,8 @@ Solo necesitas hacerlo **una vez** (o cuando actualices dependencias).
 Doble clic en  compilar.bat
 ```
 Este script:
-- Verifica que las dependencias del Paso 1 estén presentes
+- Actualiza las dependencias con `pip install -U` (PyInstaller, PyQt6, yt-dlp, imageio-ffmpeg, psutil)
+- Te pregunta si quieres la versión **L**igera (sin ffmpeg) o **C**ompleta
 - Limpia compilaciones anteriores
 - Genera el ejecutable en `dist\YT_Downloader.exe`
 - Abre la carpeta `dist\` automáticamente al terminar
@@ -58,6 +61,7 @@ Este script:
 - `view.py` construye las secciones visuales y representa resultados.
 - `window.py` conserva el estado y coordina eventos y descargas.
 - `theme.py` mantiene los colores compartidos.
+- `logging_setup.py` configura el archivo de registro (ver «Registro de errores»).
 
 El comando de compilación sigue siendo `compilar.bat`; el `.spec` incluye los módulos del paquete automáticamente.
 
@@ -128,6 +132,7 @@ Cuando pegas una URL de playlist, la app muestra hasta 200 videos con checkboxes
 | **M4A — Audio original** | Descarga directa, sin ffmpeg ni recodificación |
 | **Opus (WebM)** | Descarga directa de audio Opus en contenedor WebM, sin ffmpeg |
 | **Carpeta de destino** | Elige dónde guardar las descargas |
+| **Cookies del navegador** | Desactivado por defecto. Si lo activas, y solo cuando YouTube exige verificación o login, la app lee las cookies de Firefox, Edge, Chrome o Brave instalados |
 | **Evitar duplicados** | Omite títulos existentes del mismo tipo: audio con audio y video con video |
 | **Límite de velocidad** | Sin límite o un máximo en KB/s por descarga |
 | **Omitir ffmpeg** | Descarga MP4 como archivo único y guarda MP3 como audio original M4A; M4A y Opus siempre funcionan sin ffmpeg |
@@ -151,6 +156,9 @@ Al compilar, elige **L** para no incluir ffmpeg y reducir el tamaño del ejecuta
 YT_Downloader/
 ├── main.py
 ├── models/                      ← Interfaz, servicios, workers y configuración
+├── tests/                       ← Pruebas con pytest
+├── requirements.txt
+├── requirements-dev.txt
 ├── YT_Downloader.spec           ← Configuración de PyInstaller
 ├── dependencias.bat
 ├── compilar.bat
@@ -165,8 +173,8 @@ YT_Downloader/
 **"Python no encontrado"**
 → Reinstala Python desde [python.org](https://www.python.org/downloads/) marcando *Add Python to PATH*.
 
-**"Error al instalar ffmpeg"**
-→ Abre una terminal como administrador y ejecuta `winget install ffmpeg`. Si no tienes winget, descarga ffmpeg desde [ffmpeg.org](https://ffmpeg.org/download.html) y agrega la carpeta `bin` a tu variable de entorno PATH.
+**Quiero usar el ffmpeg del sistema en vez de `imageio-ffmpeg`**
+→ Abre una terminal y ejecuta `winget install ffmpeg`; la app lo detecta en el PATH. Si no tienes winget, descarga ffmpeg desde [ffmpeg.org](https://ffmpeg.org/download.html) y agrega la carpeta `bin` a tu variable de entorno PATH.
 
 **"[WinError 5] Acceso denegado" al terminar una descarga o conversión**
 → Otro programa (casi siempre el antivirus de Windows escaneando el archivo recién creado, o OneDrive) lo tiene abierto justo cuando la app intenta renombrarlo. La app ya espera y reintenta sola hasta 4 veces. Si aun así se repite, pulsa **Reintentar** (lo ya descargado se conserva) o agrega la carpeta de descargas como exclusión en *Seguridad de Windows → Protección contra virus → Exclusiones*.
@@ -184,13 +192,31 @@ YT_Downloader/
 → Desde noviembre de 2025 YouTube exige que yt-dlp resuelva un desafío en JavaScript. Sin un motor JS (Deno) más el paquete `yt-dlp-ejs`, yt-dlp usa un solo cliente de YouTube y muchos videos fallan con ese mensaje engañoso. La app ya incluye `yt-dlp-ejs` y, si falta el motor JS, ofrece instalar Deno al abrirla (o con el botón **⟳ Actualizar**). Si el video tampoco abre en tu navegador, entonces sí es privado, fue eliminado o está bloqueado en tu país.
 
 **"Error: Sign in to confirm you're not a bot"**
-→ YouTube a veces bloquea descargas automatizadas. Espera unos minutos e intenta de nuevo. Si persiste, actualiza yt-dlp: `pip install -U yt-dlp`.
+→ YouTube a veces bloquea descargas automatizadas. Espera unos minutos e intenta de nuevo. Si persiste, pulsa **⟳ Actualizar**, activa **Usar cookies del navegador** (con una sesión iniciada en tu navegador) o coloca un `cookies.txt` junto a la app.
 
 **El .exe no abre o da error de DLL**
 → Instala [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) de Microsoft.
 
 **La descarga de MP3 falla**
 → Verifica que ffmpeg esté instalado: abre una terminal y escribe `ffmpeg -version`. Si no responde, sigue los pasos de instalación de ffmpeg arriba.
+
+---
+
+## Registro de errores
+
+La app guarda un log rotativo (hasta 3 archivos de 512 KB) en:
+```
+%LOCALAPPDATA%\YT_Downloader\app.log
+```
+Si abres un *issue*, adjunta las últimas líneas de ese archivo.
+
+## Pruebas
+
+```
+pip install -r requirements-dev.txt
+pytest
+```
+Las pruebas cubren la lógica sin interfaz (clasificación de errores, detección de duplicados, versiones y política de cookies). Se ejecutan automáticamente en GitHub Actions.
 
 ---
 

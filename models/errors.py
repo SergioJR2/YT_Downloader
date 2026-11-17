@@ -42,6 +42,9 @@ def clean_err(e):
         msg += ('\n→ Otro programa (antivirus, OneDrive, reproductor) tiene el archivo '
                 'bloqueado. Pulsa «Reintentar»; si se repite, excluye la carpeta de '
                 'descargas en Windows Defender.')
+    elif is_bot_error(e):
+        msg += ('\n→ YouTube pide verificación. Activa «Usar cookies del navegador» '
+                'en las opciones (o coloca un cookies.txt junto a la app) y reintenta.')
     elif 'private video' in low:
         msg += '\n→ El video es privado: solo su dueño puede descargarlo.'
     elif 'members-only' in low or 'members only' in low:
@@ -61,8 +64,11 @@ def is_http_416_error(e):
     return '416' in msg and ('range' in msg or 'requested range' in msg)
 
 def is_bot_error(e):
+    """YouTube pide verificación o login (bot, edad) o respondió 403.
+    Se busca el 403 solo como error HTTP, no como número suelto en el mensaje."""
     m = _raw_err(e).lower()
-    return 'not a bot' in m or 'sign in' in m or '403' in m
+    return ('not a bot' in m or 'sign in to confirm' in m
+            or re.search(r'http error 403|403:? forbidden', m) is not None)
 
 def is_unavailable_error(e):
     m = _raw_err(e).lower()

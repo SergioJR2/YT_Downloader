@@ -23,6 +23,13 @@ from .runtime import _activate_updated_libs, find_js_runtimes
 _activate_updated_libs()
 import yt_dlp
 
+# Leer las cookies del navegador es opt-in: lo activa el usuario desde la interfaz.
+_browser_cookies_enabled = False
+
+def set_browser_cookies(enabled):
+    global _browser_cookies_enabled
+    _browser_cookies_enabled = bool(enabled)
+
 def has_ejs():
     try:
         import yt_dlp_ejs  # noqa: F401
@@ -46,7 +53,8 @@ def run_with_auth_fallback(opts, action):
       1) normal (con motor JS)
       2) otros clientes de YouTube (si el video "no está disponible" / 403)
       3) con cookies.txt, si existe
-      4) cookies leidas del navegador (solo si YouTube pide login / bot)
+      4) cookies leidas del navegador (solo si el usuario lo activó y
+         YouTube pide login / bot)
     Si todo falla, se informa el error del PRIMER intento (el más útil)."""
     clean = {k: v for k, v in opts.items()
              if k not in ('cookiefile', 'cookiesfrombrowser')}
@@ -56,7 +64,8 @@ def run_with_auth_fallback(opts, action):
                           {'youtube': {'player_client': list(ALT_CLIENTS)}}})]
     if 'cookiefile' in opts:
         steps.append(('cookiefile', {**base, 'cookiefile': opts['cookiefile']}))
-    steps += [('browser', {**base, 'cookiesfrombrowser': (br,)}) for br in BROWSERS]
+    if _browser_cookies_enabled:
+        steps += [('browser', {**base, 'cookiesfrombrowser': (br,)}) for br in BROWSERS]
 
     def should_try(kind, err):
         if err is None:

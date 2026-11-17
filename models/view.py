@@ -32,24 +32,30 @@ from .theme import (
 from .widgets import PlaylistRow
 
 
+def _logo_image(sz, radius, margin, half, shift):
+    """Dibuja el logo (círculo de acento con triángulo de «play») a tamaño sz."""
+    img = QImage(sz, sz, QImage.Format.Format_ARGB32)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QBrush(QColor("#0a0a0f"))); p.setPen(Qt.PenStyle.NoPen)
+    p.drawRoundedRect(0, 0, sz, sz, radius, radius)
+    p.setBrush(QBrush(QColor(C_ACCENT)))
+    p.drawEllipse(margin, margin, sz - 2 * margin, sz - 2 * margin)
+    p.setBrush(QBrush(QColor("white")))
+    cx, cy = sz // 2, sz // 2
+    p.drawPolygon(QPolygon([QPoint(cx - half + shift, cy - half),
+                            QPoint(cx - half + shift, cy + half),
+                            QPoint(cx + half + shift, cy)]))
+    p.end()
+    return img
+
+
 class WindowViewMixin:
     """Métodos de dibujo compartidos por la ventana principal."""
 
     def _set_icon(self):
-        sz = 64
-        img = QImage(sz, sz, QImage.Format.Format_ARGB32)
-        img.fill(Qt.GlobalColor.transparent)
-        p = QPainter(img)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QBrush(QColor("#0a0a0f"))); p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(0, 0, sz, sz, 14, 14)
-        p.setBrush(QBrush(QColor(C_ACCENT)))
-        p.drawEllipse(6, 6, sz-12, sz-12)
-        p.setBrush(QBrush(QColor("white")))
-        cx, cy, h = sz//2, sz//2, 13
-        p.drawPolygon(QPolygon([QPoint(cx-h+3,cy-h), QPoint(cx-h+3,cy+h), QPoint(cx+h+3,cy)]))
-        p.end()
-        self.setWindowIcon(QIcon(QPixmap.fromImage(img)))
+        self.setWindowIcon(QIcon(QPixmap.fromImage(_logo_image(64, 14, 6, 13, 3))))
 
     def _apply_palette(self):
         pal = QPalette()
@@ -62,18 +68,7 @@ class WindowViewMixin:
     def _build_header(self):
         row = QHBoxLayout(); row.setSpacing(14)
         sz = 44
-        img = QImage(sz, sz, QImage.Format.Format_ARGB32)
-        img.fill(Qt.GlobalColor.transparent)
-        p = QPainter(img)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QBrush(QColor("#0a0a0f"))); p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(0, 0, sz, sz, 11, 11)
-        p.setBrush(QBrush(QColor(C_ACCENT)))
-        p.drawEllipse(5, 5, sz-10, sz-10)
-        p.setBrush(QBrush(QColor("white")))
-        cx, cy, h = sz//2, sz//2, 10
-        p.drawPolygon(QPolygon([QPoint(cx-h+2,cy-h), QPoint(cx-h+2,cy+h), QPoint(cx+h+2,cy)]))
-        p.end()
+        img = _logo_image(sz, 11, 5, 10, 2)
         logo = QLabel(); logo.setPixmap(QPixmap.fromImage(img)); logo.setFixedSize(sz, sz)
         row.addWidget(logo)
         col = QVBoxLayout(); col.setSpacing(2)
@@ -156,6 +151,15 @@ class WindowViewMixin:
         self.ffmpeg_mode_hint.setStyleSheet(f"color: {C_MUTED};")
         self.ffmpeg_mode_hint.setWordWrap(True)
         fc.addWidget(self.ffmpeg_mode_hint)
+        self.chk_browser_cookies = QCheckBox("Usar cookies del navegador si YouTube lo pide")
+        self.chk_browser_cookies.setChecked(self.browser_cookies)
+        self.chk_browser_cookies.setToolTip(
+            "Solo si YouTube exige verificación o inicio de sesión: la app leerá las\n"
+            "cookies de Firefox, Edge, Chrome o Brave instalados en este equipo.\n"
+            "Desactivado por defecto; no se envían a ningún sitio salvo a YouTube.")
+        self.chk_browser_cookies.setStyleSheet(f"color: {C_TEXT};")
+        self.chk_browser_cookies.toggled.connect(self._on_browser_cookies_change)
+        fc.addWidget(self.chk_browser_cookies)
         inner.addLayout(fc)
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.VLine)
         sep.setStyleSheet(f"color: {C_BORDER};"); inner.addWidget(sep)

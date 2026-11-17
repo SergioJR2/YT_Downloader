@@ -1,0 +1,5 @@
+PyQt6>=6.5
+yt-dlp[default]
+# Opcionales: MP3 real sin instalar ffmpeg, y cierre limpio de procesos hijos
+imageio-ffmpeg
+psutil

@@ -1,4 +1,5 @@
 """Hilos de trabajo para actualizar, analizar y descargar."""
+import logging
 import os
 import platform
 import subprocess
@@ -22,6 +23,8 @@ from .services import (
     run_with_auth_fallback,
 )
 
+log = logging.getLogger(__name__)
+
 class UpdateThread(QThread):
     done = pyqtSignal(bool, str, bool)   # ok, mensaje, requiere_reinicio
 
@@ -30,8 +33,10 @@ class UpdateThread(QThread):
             if getattr(sys, 'frozen', False):
                 changed, msg = portable_update_ytdlp()
                 js_changed, js_msg = ensure_js_runtime()
-                self.done.emit(True, msg + "\n" + js_msg
-                               + "\nffmpeg: ya va incluido en la app.",
+                ff_msg = ("ffmpeg: disponible." if find_ffmpeg() else
+                          "ffmpeg: no incluido (versión ligera); MP3 requiere "
+                          "instalar ffmpeg aparte.")
+                self.done.emit(True, msg + "\n" + js_msg + "\n" + ff_msg,
                                changed or js_changed)
                 return
             pkgs   = ['yt-dlp', 'yt-dlp-ejs', 'imageio-ffmpeg']
@@ -62,6 +67,7 @@ class UpdateThread(QThread):
             lines.append(js_msg)
             self.done.emit(True, "\n".join(lines), changed or js_changed)
         except Exception as e:
+            log.exception("Fallo al actualizar dependencias")
             self.done.emit(False, str(e), False)
 
 class FetchThread(QThread):
@@ -114,11 +120,12 @@ class FetchThread(QThread):
                     'qualities': [str(h) for h in heights[:5]],
                 })
         except Exception as e:
+            log.warning("Fallo al analizar %s: %s", self.url, e)
             self.error.emit(clean_err(e))
 
 class DownloadThread(QThread):
     progress = pyqtSignal(str, float, str, str)
-    finished = pyqtSignal(str, bool, str)
+    done     = pyqtSignal(str, bool, str)   # task_id, ok, mensaje
 
     def __init__(self, task_id, url, fmt, quality, output_dir, audio_quality, speed_limit,
                  use_ffmpeg=True):
@@ -259,9 +266,10 @@ class DownloadThread(QThread):
                         if self._pause:
                             raise
                         self.msleep(100)
-            self.finished.emit(self.task_id, True, '')
+            self.done.emit(self.task_id, True, '')
         except Exception as e:
             if self._pause:
-                self.finished.emit(self.task_id, False, PAUSED_MSG)
+                self.done.emit(self.task_id, False, PAUSED_MSG)
             else:
-                self.finished.emit(self.task_id, False, clean_err(e))
+                log.warning("Fallo la descarga %s (%s): %s", self.url, self.fmt, e)
+                self.done.emit(self.task_id, False, clean_err(e))

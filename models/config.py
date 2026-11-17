@@ -11,7 +11,6 @@ BROWSERS = ("firefox", "edge", "chrome", "brave")
 ALT_CLIENTS = ("default", "tv", "web_safari", "mweb")
 
 DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Descargas_YouTube")
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 DEFAULT_CONCURRENT = 2
 MAX_CONCURRENT = 5
