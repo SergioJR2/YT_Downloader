@@ -28,6 +28,7 @@ from .runtime import find_ffmpeg, find_js_runtimes, kill_child_processes
 from .services import ytdlp_version
 from .theme import C_BG, C_BORDER
 from .widgets import DownloadCard
+from .menus import WindowMenuMixin
 from .view import WindowViewMixin
 from .workers import (
     AppDownloadThread,
@@ -37,7 +38,7 @@ from .workers import (
     UpdateThread,
 )
 
-class MainWindow(WindowViewMixin, QMainWindow):
+class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YT Downloader")
@@ -114,6 +115,7 @@ class MainWindow(WindowViewMixin, QMainWindow):
         self.main_layout.setContentsMargins(28, 24, 28, 24)
         self.main_layout.setSpacing(14)
 
+        self._build_menu_bar()
         self._build_header()
         self._build_url_card()
         self._build_options_card()
@@ -151,15 +153,15 @@ class MainWindow(WindowViewMixin, QMainWindow):
 
     # ─── Actualizar yt-dlp ───────────────────────────────────────────────
     def update_ytdlp(self):
-        self.btn_update.setEnabled(False)
-        self.btn_update.setText("Actualizando…")
+        self.act_update_ytdlp.setEnabled(False)
+        self.act_update_ytdlp.setText("Actualizando yt-dlp…")
         self._upd = UpdateThread()
         self._upd.done.connect(self._on_update_done)
         self._upd.start()
 
     def _on_update_done(self, ok, msg, restart):
-        self.btn_update.setEnabled(True)
-        self.btn_update.setText(f"⟳  Actualizar  (v{ytdlp_version()})")
+        self.act_update_ytdlp.setEnabled(True)
+        self.act_update_ytdlp.setText(f"Actualizar yt-dlp  (v{ytdlp_version()})")
         if not ok:
             QMessageBox.warning(self, "Actualización", "No se pudo actualizar:\n\n" + msg)
             return
@@ -185,16 +187,16 @@ class MainWindow(WindowViewMixin, QMainWindow):
             return
         self._app_check_manual = manual
         if manual:
-            self.btn_app_update.setEnabled(False)
-            self.btn_app_update.setText("Buscando…")
+            self.act_app_update.setEnabled(False)
+            self.act_app_update.setText("Buscando actualización…")
         self._app_check = AppUpdateCheckThread()
         self._app_check.done.connect(self._on_app_check_done)
         self._app_check.start()
 
     def _on_app_check_done(self, info, err):
         manual = self._app_check_manual
-        self.btn_app_update.setEnabled(True)
-        self.btn_app_update.setText(f"⬆  App v{APP_VERSION}")
+        self.act_app_update.setEnabled(True)
+        self.act_app_update.setText(f"Buscar actualización de la app  (v{APP_VERSION})")
         if err or info is None:
             if manual:
                 QMessageBox.warning(self, "Actualización de la app",
@@ -667,14 +669,7 @@ class MainWindow(WindowViewMixin, QMainWindow):
             self.ffmpeg_mode_hint.setText("MP4 puede combinar video y audio; MP3 se convierte al bitrate elegido.")
         else:
             self.ffmpeg_mode_hint.setText("MP4 usa un formato directo (hasta 720p); MP3 guarda audio M4A original.")
-        show = (fmt == 'mp4')
-        for i in range(self.qc.count()):
-            item = self.qc.itemAt(i)
-            if item.widget(): item.widget().setVisible(show)
-            elif item.layout():
-                for j in range(item.layout().count()):
-                    wi = item.layout().itemAt(j)
-                    if wi and wi.widget(): wi.widget().setVisible(show)
+        self.quality_row.setVisible(fmt == 'mp4')   # la calidad de video solo aplica a MP4
 
     def _on_quality(self):
         self.selected_quality = self.sender().property("quality")

@@ -55,6 +55,7 @@ Este script:
 - `workers.py` ejecuta análisis, descargas y actualizaciones en hilos.
 - `downloads.py` compara los títulos con nombres de archivos existentes (incluye subcarpetas).
 - `appupdate.py` consulta GitHub Releases, descarga, verifica y aplica las actualizaciones de la app.
+- `menus.py` construye la barra de menú y la ventana de Ajustes.
 - `widgets.py` define las filas de playlist y las tarjetas de descarga.
 - `view.py` construye las secciones visuales y representa resultados.
 - `window.py` conserva el estado y coordina eventos y descargas.
@@ -101,7 +102,7 @@ Antes de iniciar una descarga, la app revisa los nombres de audio o video del mi
 
 M4A y Opus se descargan sin conversión y no necesitan ffmpeg. Opus se guarda en su contenedor WebM. MP3 requiere ffmpeg; si no está disponible, la app conserva el audio original sin conversión. Cada tarjeta muestra el formato descargado.
 
-### Botón ⟳ Actualizar
+### Menú Herramientas → Actualizar yt-dlp
 
 Actualiza las dependencias del programa (yt-dlp y ffmpeg) y es lo primero que conviene probar si YouTube empieza a fallar:
 
@@ -110,7 +111,7 @@ Actualiza las dependencias del programa (yt-dlp y ffmpeg) y es lo primero que co
 
 Al terminar, la app ofrece reiniciarse para aplicar la actualización.
 
-### Botón ⬆ App (actualizar el programa)
+### Menú Herramientas → Buscar actualización de la app
 
 Busca en las [Releases de GitHub](https://github.com/SergioJR2/YT_Downloader/releases) la última versión publicada y, si es más nueva que la instalada, la descarga, verifica su SHA-256, cierra la app, la actualiza y la vuelve a abrir. Al iniciar el `.exe` también la busca en segundo plano (si hay una nueva, pregunta: *Actualizar ahora*, *Más tarde* u *Omitir esta versión*).
 
@@ -131,6 +132,17 @@ Cuando pegas una URL de playlist, la app muestra hasta 200 videos con checkboxes
 - Controlar cuántos videos se descargan a la vez (1–5) para no saturar la conexión
 
 ---
+
+## Menús
+
+| Menú | Contenido |
+|------|-----------|
+| **Archivo** | Cambiar carpeta de descarga, abrir la carpeta, salir |
+| **Ajustes** | Opciones de descarga: calidad MP3, descargas a la vez, límite de velocidad y omitir ffmpeg |
+| **Herramientas** | Actualizar yt-dlp y buscar actualización de la app |
+| **Ayuda** | Versiones en GitHub, reportar un problema y acerca de |
+
+En la pantalla principal quedan la URL, el formato (MP4, MP3, M4A, Opus), la calidad de video (solo con MP4) y las descargas.
 
 ## Opciones de descarga
 

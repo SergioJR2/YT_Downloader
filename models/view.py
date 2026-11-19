@@ -84,16 +84,6 @@ class WindowViewMixin:
         t2.setFont(QFont("Consolas", 9)); t2.setStyleSheet(f"color: {C_MUTED};")
         col.addWidget(t1); col.addWidget(t2)
         row.addLayout(col); row.addStretch()
-        self.btn_update = self._btn_ghost(f"⟳  Actualizar  (v{ytdlp_version()})")
-        self.btn_update.setFixedHeight(34)
-        self.btn_update.setToolTip("Actualiza las dependencias del programa (yt-dlp y ffmpeg).\nSoluciona la mayoría de errores de YouTube.")
-        self.btn_update.clicked.connect(self.update_ytdlp)
-        row.addWidget(self.btn_update)
-        self.btn_app_update = self._btn_ghost(f"⬆  App v{APP_VERSION}")
-        self.btn_app_update.setFixedHeight(34)
-        self.btn_app_update.setToolTip("Busca una versión nueva de YT Downloader en GitHub (Releases)\ny la instala.")
-        self.btn_app_update.clicked.connect(lambda: self.check_app_update(manual=True))
-        row.addWidget(self.btn_app_update)
         self.main_layout.addLayout(row)
 
     def _build_url_card(self):
@@ -130,11 +120,6 @@ class WindowViewMixin:
     def _build_options_card(self):
         card = self._card(); lay = card.layout()
         self._sec_lbl(lay, "FORMATO  &  CALIDAD")
-        inner = QHBoxLayout(); inner.setSpacing(20)
-        # Formato
-        fc = QVBoxLayout(); fc.setSpacing(7)
-        fl = QLabel("Formato"); fl.setFont(QFont("Segoe UI", 8))
-        fl.setStyleSheet(f"color: {C_MUTED};"); fc.addWidget(fl)
         fp = QHBoxLayout(); fp.setSpacing(7)
         self.btn_mp4 = self._pill("MP4", active=self.selected_fmt == 'mp4')
         self.btn_mp3 = self._pill("MP3", active=self.selected_fmt == 'mp3')
@@ -146,127 +131,42 @@ class WindowViewMixin:
         self.btn_opus.clicked.connect(lambda: self._select_fmt('opus'))
         fp.addWidget(self.btn_mp4); fp.addWidget(self.btn_mp3)
         fp.addWidget(self.btn_m4a); fp.addWidget(self.btn_opus); fp.addStretch()
-        fc.addLayout(fp)
-        self.chk_no_ffmpeg = QCheckBox("Omitir ffmpeg")
-        self.chk_no_ffmpeg.setChecked(not self.use_ffmpeg)
-        self.chk_no_ffmpeg.setEnabled(self._ffmpeg_available)
-        self.chk_no_ffmpeg.setToolTip(
-            "MP4 usará un formato directo (hasta 720p) y MP3 guardará el audio original M4A. "
-            "M4A y Opus siempre se descargan sin ffmpeg.")
-        self.chk_no_ffmpeg.setStyleSheet(f"color: {C_TEXT};")
-        self.chk_no_ffmpeg.toggled.connect(self._on_ffmpeg_mode_change)
-        fc.addWidget(self.chk_no_ffmpeg)
-        self.ffmpeg_mode_hint = QLabel("")
-        self.ffmpeg_mode_hint.setFont(QFont("Segoe UI", 7))
-        self.ffmpeg_mode_hint.setStyleSheet(f"color: {C_MUTED};")
-        self.ffmpeg_mode_hint.setWordWrap(True)
-        fc.addWidget(self.ffmpeg_mode_hint)
-        inner.addLayout(fc)
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setStyleSheet(f"color: {C_BORDER};"); inner.addWidget(sep)
-        # Calidad
-        self.qc = QVBoxLayout(); self.qc.setSpacing(7)
+        lay.addLayout(fp)
+        # Calidad de video (solo aplica a MP4)
+        self.quality_row = QWidget()
+        self.quality_row.setStyleSheet("background: transparent; border: none;")
+        self.qc = QHBoxLayout(self.quality_row)
+        self.qc.setContentsMargins(0, 0, 0, 0); self.qc.setSpacing(7)
         ql = QLabel("Calidad de video"); ql.setFont(QFont("Segoe UI", 8))
-        ql.setStyleSheet(f"color: {C_MUTED};"); self.qc.addWidget(ql)
-        qp = QHBoxLayout(); qp.setSpacing(7)
+        ql.setStyleSheet(f"color: {C_MUTED}; border: none; background: transparent;")
+        self.qc.addWidget(ql); self.qc.addSpacing(6)
         self.quality_pills = []
-        for label, val in [("Mejor","best"),("1080p","1080"),("720p","720"),("480p","480")]:
+        for label, val in [("Mejor", "best"), ("1080p", "1080"), ("720p", "720"), ("480p", "480")]:
             b = self._pill(label, active=(val == self.selected_quality), gold=True)
             b.setProperty("quality", val)
             b.clicked.connect(self._on_quality)
-            self.quality_pills.append(b); qp.addWidget(b)
-        qp.addStretch(); self.qc.addLayout(qp)
-        inner.addLayout(self.qc)
-        # ── Descargas simultáneas ──────────────────────────────────────
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.VLine)
-        sep2.setStyleSheet(f"color: {C_BORDER};"); inner.addWidget(sep2)
-        cc = QVBoxLayout(); cc.setSpacing(7)
-        cl = QLabel("Descargas a la vez"); cl.setFont(QFont("Segoe UI", 8))
-        cl.setStyleSheet(f"color: {C_MUTED};"); cc.addWidget(cl)
-        self.spin_concurrent = QSpinBox()
-        self.spin_concurrent.setRange(1, MAX_CONCURRENT)
-        self.spin_concurrent.setValue(self._max_concurrent)
-        self.spin_concurrent.setFixedWidth(60)
-        self.spin_concurrent.setFixedHeight(30)
-        self.spin_concurrent.setStyleSheet(f"""
-            QSpinBox {{
-                background: {C_SURF2}; border: 1px solid {C_BORDER};
-                border-radius: 7px; color: {C_TEXT}; padding: 0 8px;
-                font-family: Consolas; font-size: 10pt;
-            }}
-            QSpinBox::up-button, QSpinBox::down-button {{
-                width: 18px; border: none; background: {C_SURF3};
-            }}
-        """)
-        self.spin_concurrent.valueChanged.connect(self._on_concurrent_change)
-        hint = QLabel("(1–5)")
-        hint.setFont(QFont("Segoe UI", 7))
-        hint.setStyleSheet(f"color: {C_MUTED};")
-        cc.addWidget(self.spin_concurrent)
-        cc.addWidget(hint)
-        inner.addLayout(cc)
-        # Preferencias adicionales persistentes
-        prefs = QHBoxLayout(); prefs.setSpacing(14)
-        folder_box = QVBoxLayout(); folder_box.setSpacing(5)
-        folder_lbl = QLabel("Carpeta de destino"); folder_lbl.setFont(QFont("Segoe UI", 8))
-        folder_lbl.setStyleSheet(f"color: {C_MUTED};")
+            self.quality_pills.append(b); self.qc.addWidget(b)
+        self.qc.addStretch()
+        lay.addWidget(self.quality_row)
+        self.ffmpeg_mode_hint = QLabel("")
+        self.ffmpeg_mode_hint.setFont(QFont("Segoe UI", 7))
+        self.ffmpeg_mode_hint.setStyleSheet(f"color: {C_MUTED}; border: none; background: transparent;")
+        self.ffmpeg_mode_hint.setWordWrap(True)
+        lay.addWidget(self.ffmpeg_mode_hint)
+        dest = QHBoxLayout(); dest.setSpacing(8)
+        dest_lbl = QLabel("Destino:"); dest_lbl.setFont(QFont("Segoe UI", 8))
+        dest_lbl.setStyleSheet(f"color: {C_MUTED}; border: none; background: transparent;")
         self.lbl_output_dir = QLabel(self.output_dir)
         self.lbl_output_dir.setFont(QFont("Segoe UI", 8))
-        self.lbl_output_dir.setStyleSheet(f"color: {C_TEXT};")
-        self.lbl_output_dir.setMaximumWidth(280)
+        self.lbl_output_dir.setStyleSheet(f"color: {C_TEXT}; border: none; background: transparent;")
         self.lbl_output_dir.setWordWrap(True)
         self.lbl_output_dir.setToolTip(self.output_dir)
         self.lbl_output_dir.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.btn_folder = self._btn_ghost("Cambiar carpeta")
-        self.btn_folder.clicked.connect(self._choose_output_dir)
-        folder_box.addWidget(folder_lbl)
-        folder_box.addWidget(self.lbl_output_dir)
-        folder_box.addWidget(self.btn_folder)
-        prefs.addLayout(folder_box, 2)
-        audio_box = QVBoxLayout(); audio_box.setSpacing(5)
-        audio_lbl = QLabel("Calidad MP3"); audio_lbl.setFont(QFont("Segoe UI", 8))
-        audio_lbl.setStyleSheet(f"color: {C_MUTED};")
-        self.combo_audio_quality = QComboBox()
-        self.combo_audio_quality.setFixedHeight(30)
-        self.combo_audio_quality.setStyleSheet(f"""
-            QComboBox {{ background: {C_SURF2}; border: 1px solid {C_BORDER};
-                border-radius: 7px; color: {C_TEXT}; padding: 0 8px; }}
-            QComboBox QAbstractItemView {{ background: {C_SURF2}; color: {C_TEXT};
-                selection-background-color: {C_SURF3}; }}
-        """)
-        for bitrate in (128, 192, 320):
-            self.combo_audio_quality.addItem(f"{bitrate} kbps", bitrate)
-        audio_index = self.combo_audio_quality.findData(self.audio_quality)
-        self.combo_audio_quality.setCurrentIndex(max(0, audio_index))
-        self.combo_audio_quality.currentIndexChanged.connect(self._on_audio_quality)
-        audio_hint = QLabel("Requiere ffmpeg")
-        audio_hint.setFont(QFont("Segoe UI", 7)); audio_hint.setStyleSheet(f"color: {C_MUTED};")
-        audio_box.addWidget(audio_lbl); audio_box.addWidget(self.combo_audio_quality)
-        audio_box.addWidget(audio_hint)
-        prefs.addLayout(audio_box)
-        speed_box = QVBoxLayout(); speed_box.setSpacing(5)
-        speed_lbl = QLabel("Límite de velocidad"); speed_lbl.setFont(QFont("Segoe UI", 8))
-        speed_lbl.setStyleSheet(f"color: {C_MUTED};")
-        self.spin_speed = QSpinBox()
-        self.spin_speed.setRange(0, 102400)
-        self.spin_speed.setValue(self.speed_limit)
-        self.spin_speed.setSuffix(" KB/s")
-        self.spin_speed.setFixedHeight(30)
-        self.spin_speed.setStyleSheet(f"""
-            QSpinBox {{ background: {C_SURF2}; border: 1px solid {C_BORDER};
-                border-radius: 7px; color: {C_TEXT}; padding: 0 8px; }}
-        """)
-        self.spin_speed.setSpecialValueText("Sin límite")
-        self.spin_speed.setToolTip("0 significa sin límite. El valor se aplica a cada descarga.")
-        self.spin_speed.valueChanged.connect(self._on_speed_change)
-        speed_hint = QLabel("0 = sin límite")
-        speed_hint.setFont(QFont("Segoe UI", 7)); speed_hint.setStyleSheet(f"color: {C_MUTED};")
-        speed_box.addWidget(speed_lbl); speed_box.addWidget(self.spin_speed); speed_box.addWidget(speed_hint)
-        prefs.addLayout(speed_box)
-        inner.addStretch()
-        lay.addLayout(inner)
-        lay.addLayout(prefs)
+        dest.addWidget(dest_lbl); dest.addWidget(self.lbl_output_dir, 1)
+        lay.addLayout(dest)
         self.main_layout.addWidget(card)
+        # Calidad MP3, velocidad, descargas simultáneas y ffmpeg: menú Ajustes
+        self._build_settings_dialog()
         self._select_fmt(self.selected_fmt)
 
     def _build_info_card(self):
