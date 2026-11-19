@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .config import MAX_CONCURRENT
+from .config import APP_VERSION, MAX_CONCURRENT
 from .services import ytdlp_version
 from .theme import (
     C_ACCENT,
@@ -89,6 +89,11 @@ class WindowViewMixin:
         self.btn_update.setToolTip("Actualiza las dependencias del programa (yt-dlp y ffmpeg).\nSoluciona la mayoría de errores de YouTube.")
         self.btn_update.clicked.connect(self.update_ytdlp)
         row.addWidget(self.btn_update)
+        self.btn_app_update = self._btn_ghost(f"⬆  App v{APP_VERSION}")
+        self.btn_app_update.setFixedHeight(34)
+        self.btn_app_update.setToolTip("Busca una versión nueva de YT Downloader en GitHub (Releases)\ny la instala.")
+        self.btn_app_update.clicked.connect(lambda: self.check_app_update(manual=True))
+        row.addWidget(self.btn_app_update)
         self.main_layout.addLayout(row)
 
     def _build_url_card(self):

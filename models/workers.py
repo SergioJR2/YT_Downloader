@@ -6,6 +6,12 @@ import sys
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from .appupdate import (
+    UpdateCancelled,
+    check_for_update,
+    cleanup_update_files,
+    download_update,
+)
 from .config import LOCK_RETRIES, LOCK_RETRY_DELAY
 from .errors import (
     PAUSED_MSG,
@@ -63,6 +69,42 @@ class UpdateThread(QThread):
             self.done.emit(True, "\n".join(lines), changed or js_changed)
         except Exception as e:
             self.done.emit(False, str(e), False)
+
+class AppUpdateCheckThread(QThread):
+    """Consulta en GitHub si hay una versión nueva de la aplicación."""
+    done = pyqtSignal(object, str)   # info (dict) | None, error
+
+    def run(self):
+        try:
+            cleanup_update_files()
+            self.done.emit(check_for_update(), '')
+        except Exception as e:
+            self.done.emit(None, clean_err(e))
+
+class AppDownloadThread(QThread):
+    """Descarga y verifica el instalador / .exe de la versión nueva."""
+    progress = pyqtSignal(int, int)   # descargado, total (bytes)
+    done = pyqtSignal(bool, str)      # ok, ruta del archivo | mensaje de error
+
+    def __init__(self, asset):
+        super().__init__()
+        self.asset = asset
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        try:
+            path = download_update(
+                self.asset,
+                progress=lambda d, t: self.progress.emit(d, t),
+                cancelled=lambda: self._cancel)
+            self.done.emit(True, path)
+        except UpdateCancelled:
+            self.done.emit(False, '')
+        except Exception as e:
+            self.done.emit(False, clean_err(e))
 
 class FetchThread(QThread):
     result = pyqtSignal(dict)

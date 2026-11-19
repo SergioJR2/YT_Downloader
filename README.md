@@ -53,7 +53,8 @@ Este script:
 - `services.py` reúne la lógica de yt-dlp, autenticación y actualizaciones.
 - `errors.py` normaliza y clasifica errores.
 - `workers.py` ejecuta análisis, descargas y actualizaciones en hilos.
-- `downloads.py` compara los títulos con nombres de archivos existentes.
+- `downloads.py` compara los títulos con nombres de archivos existentes (incluye subcarpetas).
+- `appupdate.py` consulta GitHub Releases, descarga, verifica y aplica las actualizaciones de la app.
 - `widgets.py` define las filas de playlist y las tarjetas de descarga.
 - `view.py` construye las secciones visuales y representa resultados.
 - `window.py` conserva el estado y coordina eventos y descargas.
@@ -96,7 +97,7 @@ Si cierras la app con descargas en curso, se pausan solas y puedes volver a baja
 
 ### Evitar archivos duplicados
 
-Antes de iniciar una descarga, la app revisa los nombres de audio o video del mismo tipo en la carpeta de destino. Si ya hay un archivo del mismo tipo con ese nombre base, lo omite aunque la extensión sea distinta. Por ejemplo, `Título.mp3` no bloquea la descarga de `Título.mp4`, pero sí evita otra descarga de audio llamada `Título`. La comparación no distingue mayúsculas. También evita poner en cola dos descargas del mismo tipo que producirían el mismo nombre.
+Antes de iniciar una descarga, la app revisa los nombres de audio o video del mismo tipo en la carpeta de destino **y en todas sus subcarpetas** (se ignoran las carpetas ocultas o de sistema, como `.git` o `$RECYCLE.BIN`). Así puedes organizar tus descargas en carpetas y no se vuelven a bajar; el aviso muestra la ruta relativa del archivo encontrado. Si ya hay un archivo del mismo tipo con ese nombre base, lo omite aunque la extensión sea distinta. Por ejemplo, `Título.mp3` no bloquea la descarga de `Título.mp4`, pero sí evita otra descarga de audio llamada `Título`. La comparación no distingue mayúsculas. También evita poner en cola dos descargas del mismo tipo que producirían el mismo nombre.
 
 M4A y Opus se descargan sin conversión y no necesitan ffmpeg. Opus se guarda en su contenedor WebM. MP3 requiere ffmpeg; si no está disponible, la app conserva el audio original sin conversión. Cada tarjeta muestra el formato descargado.
 
@@ -108,6 +109,19 @@ Actualiza las dependencias del programa (yt-dlp y ffmpeg) y es lo primero que co
 - **Con el .exe instalado:** descarga el yt-dlp más reciente desde PyPI (verifica su SHA-256) y lo guarda en `%LOCALAPPDATA%\YT_Downloader`. No hace falta reinstalar ni recompilar. Si más adelante instalas un .exe nuevo, esa copia se descarta y se usa la que trae el .exe.
 
 Al terminar, la app ofrece reiniciarse para aplicar la actualización.
+
+### Botón ⬆ App (actualizar el programa)
+
+Busca en las [Releases de GitHub](https://github.com/SergioJR2/YT_Downloader/releases) la última versión publicada y, si es más nueva que la instalada, la descarga, verifica su SHA-256, cierra la app, la actualiza y la vuelve a abrir. Al iniciar el `.exe` también la busca en segundo plano (si hay una nueva, pregunta: *Actualizar ahora*, *Más tarde* u *Omitir esta versión*).
+
+- Si la app se instaló con el instalador, usa `YT_Downloader_Setup.exe` (instalación silenciosa).
+- Si es el `.exe` suelto, reemplaza el archivo con `YT_Downloader.exe` de la release.
+- Con `py main.py` solo avisa y abre la página de descargas.
+
+**Para publicar una versión nueva:**
+1. Sube `APP_VERSION` en `models/config.py` (p. ej. `"1.3.0"`).
+2. Ejecuta `compilar.bat` (el instalador toma la misma versión automáticamente).
+3. En GitHub crea una Release con tag `V1.3.0` (debe coincidir con `APP_VERSION`) y adjunta `dist\YT_Downloader.exe` e `instalador\YT_Downloader_Setup.exe` con esos nombres.
 
 ### Descargar playlists
 

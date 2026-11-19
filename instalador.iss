@@ -2,7 +2,10 @@
 ; Se genera con:  ISCC.exe instalador.iss   (lo hace compilar.bat automaticamente)
 
 #define AppName    "YT Downloader"
-#define AppVersion "1.0.0"
+#ifndef AppVersion
+  ; compilar.bat lo reemplaza con APP_VERSION de models\config.py (ISCC /DAppVersion=...)
+  #define AppVersion "1.2.0"
+#endif
 #define AppExe     "YT_Downloader.exe"
 
 [Setup]
@@ -21,6 +24,8 @@ UninstallDisplayIcon={app}\{#AppExe}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; Permite que la app actualice a la siguiente versión en silencio (cierra la app abierta)
+CloseApplications=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
@@ -39,4 +44,4 @@ Name: "{group}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExe}"; Description: "Abrir {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Description: "Abrir {#AppName}"; Flags: nowait postinstall

@@ -6,19 +6,22 @@ import subprocess
 import sys
 from collections import deque
 
-from PyQt6.QtCore import QSettings, QTimer
+from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QNetworkAccessManager
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
-from .config import DEFAULT_CONCURRENT, DOWNLOAD_DIR, MAX_CONCURRENT
+from .appupdate import RELEASES_URL, apply_update
+from .config import APP_VERSION, DEFAULT_CONCURRENT, DOWNLOAD_DIR, MAX_CONCURRENT
 from .downloads import download_name_key, existing_download_names
 from .errors import PAUSED_MSG
 from .runtime import find_ffmpeg, find_js_runtimes, kill_child_processes
@@ -26,7 +29,13 @@ from .services import ytdlp_version
 from .theme import C_BG, C_BORDER
 from .widgets import DownloadCard
 from .view import WindowViewMixin
-from .workers import DownloadThread, FetchThread, UpdateThread
+from .workers import (
+    AppDownloadThread,
+    AppUpdateCheckThread,
+    DownloadThread,
+    FetchThread,
+    UpdateThread,
+)
 
 class MainWindow(WindowViewMixin, QMainWindow):
     def __init__(self):
@@ -116,6 +125,15 @@ class MainWindow(WindowViewMixin, QMainWindow):
         # Si falta el motor JavaScript que YouTube exige, ofrecer instalarlo
         QTimer.singleShot(600, self._check_js_runtime)
 
+        # Busca en segundo plano una versión nueva de la app (solo con el .exe)
+        self._app_check = None
+        self._app_check_manual = False
+        self._app_dl = None
+        self._app_dlg = None
+        self._app_asset = None
+        if getattr(sys, 'frozen', False):
+            QTimer.singleShot(3000, lambda: self.check_app_update(manual=False))
+
     # ── Icono ──────────────────────────────────────────────────────────────
 
 
@@ -158,6 +176,126 @@ class MainWindow(WindowViewMixin, QMainWindow):
             subprocess.Popen(args, env=env)
             self.close()
             QApplication.quit()
+
+    # ─── Actualizar la propia app (GitHub Releases) ──────────────────────
+    def check_app_update(self, manual=False):
+        if self._app_check is not None and self._app_check.isRunning():
+            return
+        if self._app_dl is not None and self._app_dl.isRunning():
+            return
+        self._app_check_manual = manual
+        if manual:
+            self.btn_app_update.setEnabled(False)
+            self.btn_app_update.setText("Buscando…")
+        self._app_check = AppUpdateCheckThread()
+        self._app_check.done.connect(self._on_app_check_done)
+        self._app_check.start()
+
+    def _on_app_check_done(self, info, err):
+        manual = self._app_check_manual
+        self.btn_app_update.setEnabled(True)
+        self.btn_app_update.setText(f"⬆  App v{APP_VERSION}")
+        if err or info is None:
+            if manual:
+                QMessageBox.warning(self, "Actualización de la app",
+                                    "No se pudo consultar GitHub:\n\n" + err)
+            return
+        if not info['newer']:
+            if manual:
+                QMessageBox.information(
+                    self, "Actualización de la app",
+                    f"Ya tienes la última versión (v{APP_VERSION}).")
+            return
+        if (not manual and
+                self.settings.value("skipped_app_version", "", type=str) == info['version']):
+            return
+        self._offer_app_update(info, manual)
+
+    def _offer_app_update(self, info, manual):
+        asset = info['asset']
+        text = f"Hay una versión nueva: v{info['version']}  (tienes v{APP_VERSION})."
+        notes = info['notes']
+        if notes:
+            text += "\n\nNovedades:\n" + notes[:700] + ("…" if len(notes) > 700 else "")
+        if not asset:
+            text += ("\n\nEsta copia no se puede actualizar sola"
+                     + (" (se está ejecutando desde el código fuente)."
+                        if not getattr(sys, 'frozen', False)
+                        else " (no hay un archivo compatible o la carpeta no permite escribir)."))
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Actualización disponible")
+        box.setText(text)
+        b_go = box.addButton("Actualizar ahora" if asset else "Abrir página de descarga",
+                             QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Más tarde", QMessageBox.ButtonRole.RejectRole)
+        b_skip = None
+        if not manual:
+            b_skip = box.addButton("Omitir esta versión", QMessageBox.ButtonRole.DestructiveRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is b_skip and b_skip is not None:
+            self.settings.setValue("skipped_app_version", info['version'])
+        elif clicked is b_go:
+            if asset:
+                self._download_app_update(info)
+            else:
+                QDesktopServices.openUrl(QUrl(info.get('page') or RELEASES_URL))
+
+    def _download_app_update(self, info):
+        if self._active_threads or self._download_queue:
+            r = QMessageBox.question(
+                self, "Descargas en curso",
+                "Hay descargas activas o en cola. Al actualizar se pausarán (lo ya "
+                "descargado se conserva) y tendrás que reanudarlas después.\n\n¿Continuar?")
+            if r != QMessageBox.StandardButton.Yes:
+                return
+        self._app_asset = info['asset']
+        dlg = QProgressDialog(f"Descargando v{info['version']}…", "Cancelar", 0, 100, self)
+        dlg.setWindowTitle("Actualizando YT Downloader")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+        th = AppDownloadThread(self._app_asset)
+        th.progress.connect(self._on_app_dl_progress)
+        th.done.connect(self._on_app_dl_done)
+        dlg.canceled.connect(th.cancel)
+        self._app_dlg, self._app_dl = dlg, th
+        th.start()
+
+    def _on_app_dl_progress(self, done, total):
+        if self._app_dlg is None:
+            return
+        mb = 1024 ** 2
+        if total:
+            self._app_dlg.setValue(min(99, int(done * 100 / total)))
+            self._app_dlg.setLabelText(
+                f"Descargando… {done / mb:.1f} / {total / mb:.1f} MB")
+        else:
+            self._app_dlg.setLabelText(f"Descargando… {done / mb:.1f} MB")
+
+    def _on_app_dl_done(self, ok, result):
+        if self._app_dlg is not None:
+            self._app_dlg.blockSignals(True)
+            self._app_dlg.close()
+            self._app_dlg.deleteLater()
+            self._app_dlg = None
+        if not ok:
+            if result:   # texto vacío = canceló el usuario
+                QMessageBox.warning(self, "Actualización de la app",
+                                    "No se pudo descargar la actualización:\n\n" + result)
+            return
+        try:
+            apply_update(result, self._app_asset['kind'])
+        except Exception as e:
+            QMessageBox.warning(self, "Actualización de la app",
+                                "No se pudo aplicar la actualización:\n\n" + str(e))
+            return
+        # El script auxiliar espera a que esta app cierre, instala y la reabre.
+        self.close()
+        QApplication.quit()
 
     # ─── Lógica de fetch ──────────────────────────────────────────────────
 
@@ -467,6 +605,12 @@ class MainWindow(WindowViewMixin, QMainWindow):
                 if waited >= 3000 and waited % 1000 == 0:
                     kill_child_processes()
         kill_child_processes()
+        for th in (self._app_check, self._app_dl):
+            if th is not None and th.isRunning():
+                if hasattr(th, 'cancel'):
+                    th.cancel()
+                if not th.wait(2000):
+                    th.terminate(); th.wait(500)
         event.accept()
 
     def _gc_threads(self):
