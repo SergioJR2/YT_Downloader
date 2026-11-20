@@ -9,7 +9,15 @@ import shutil
 import sys
 import zipfile
 
-from .config import ALT_CLIENTS, BROWSERS, DENO_DIR, LIBS_META, LIBS_ROOT
+from .config import (
+    ALT_CLIENTS,
+    BROWSERS,
+    DENO_DIR,
+    DENO_SHA256,
+    DENO_VERSION,
+    LIBS_META,
+    LIBS_ROOT,
+)
 from .errors import (
     PauseRequested,
     _raw_err,
@@ -41,12 +49,13 @@ def youtube_opts():
         opts['remote_components'] = ['ejs:github']
     return opts
 
-def run_with_auth_fallback(opts, action):
+def run_with_auth_fallback(opts, action, allow_browser_cookies=False):
     """Ejecuta action(ydl). Orden de intentos:
       1) normal (con motor JS)
       2) otros clientes de YouTube (si el video "no está disponible" / 403)
       3) con cookies.txt, si existe
-      4) cookies leidas del navegador (solo si YouTube pide login / bot)
+      4) cookies leidas del navegador: SOLO si el usuario lo activó en Ajustes
+         (allow_browser_cookies), porque implica leer datos sensibles del navegador.
     Si todo falla, se informa el error del PRIMER intento (el más útil)."""
     clean = {k: v for k, v in opts.items()
              if k not in ('cookiefile', 'cookiesfrombrowser')}
@@ -56,7 +65,8 @@ def run_with_auth_fallback(opts, action):
                           {'youtube': {'player_client': list(ALT_CLIENTS)}}})]
     if 'cookiefile' in opts:
         steps.append(('cookiefile', {**base, 'cookiefile': opts['cookiefile']}))
-    steps += [('browser', {**base, 'cookiesfrombrowser': (br,)}) for br in BROWSERS]
+    if allow_browser_cookies:
+        steps += [('browser', {**base, 'cookiesfrombrowser': (br,)}) for br in BROWSERS]
 
     def should_try(kind, err):
         if err is None:
@@ -160,19 +170,18 @@ def ensure_js_runtime():
         return False, ("Falta un motor JavaScript. Instala Deno (https://deno.com) "
                        "o Node 20+ y reinicia la app.")
     arch = 'aarch64' if platform.machine().upper() in ('ARM64', 'AARCH64') else 'x86_64'
+    expected = DENO_SHA256[arch]       # hash fijo en config.py, no el del servidor
     name = f'deno-{arch}-pc-windows-msvc.zip'
-    base = 'https://github.com/denoland/deno/releases/latest/download/'
-    m = re.search(r'\b[0-9a-fA-F]{64}\b', _http_get(base + name + '.sha256sum').decode('utf-8', 'ignore'))
-    if not m:
-        raise RuntimeError("No se pudo obtener el SHA-256 de Deno.")
-    blob = _http_get(base + name, 300)
-    if hashlib.sha256(blob).hexdigest().lower() != m.group(0).lower():
-        raise RuntimeError("La descarga de Deno está corrupta (el SHA-256 no coincide).")
+    url = f'https://github.com/denoland/deno/releases/download/{DENO_VERSION}/{name}'
+    blob = _http_get(url, 300)
+    if hashlib.sha256(blob).hexdigest().lower() != expected.lower():
+        raise RuntimeError("La descarga de Deno está corrupta o no es la esperada "
+                           "(el SHA-256 no coincide).")
     os.makedirs(DENO_DIR, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(blob)) as z, \
             open(os.path.join(DENO_DIR, 'deno.exe'), 'wb') as dst:
         shutil.copyfileobj(z.open('deno.exe'), dst)
-    return True, "Motor JavaScript (Deno) instalado."
+    return True, f"Motor JavaScript (Deno {DENO_VERSION}) instalado."
 
 def _pkg_version(name):
     try:

@@ -60,6 +60,7 @@ Este script:
 - `view.py` construye las secciones visuales y representa resultados.
 - `window.py` conserva el estado y coordina eventos y descargas.
 - `theme.py` mantiene los colores compartidos.
+- `logs.py` configura el archivo de registro y captura las excepciones no controladas.
 
 El comando de compilación sigue siendo `compilar.bat`; el `.spec` incluye los módulos del paquete automáticamente.
 
@@ -111,10 +112,13 @@ Actualiza las dependencias del programa (yt-dlp y ffmpeg) y es lo primero que co
 
 Al terminar, la app ofrece reiniciarse para aplicar la actualización.
 
+El motor JavaScript (Deno) se instala con una **versión fija** (`DENO_VERSION` en `models/config.py`) y su SHA-256 está incluido en el propio código (`DENO_SHA256`), de modo que no depende del hash que publique el servidor de descarga. Para subir de versión, cambia `DENO_VERSION` y los hashes (se publican junto a cada release de Deno, en el archivo `.sha256sum`).
+
 ### Menú Herramientas → Buscar actualización de la app
 
 Busca en las [Releases de GitHub](https://github.com/SergioJR2/YT_Downloader/releases) la última versión publicada y, si es más nueva que la instalada, la descarga, verifica su SHA-256, cierra la app, la actualiza y la vuelve a abrir. Al iniciar el `.exe` también la busca en segundo plano (si hay una nueva, pregunta: *Actualizar ahora*, *Más tarde* u *Omitir esta versión*).
 
+- **Solo se instala automáticamente si la release publica un SHA-256** del archivo (GitHub lo añade solo en el campo `digest` de los assets recientes, o puedes adjuntar `YT_Downloader.exe.sha256`). Sin hash, la app no instala nada por su cuenta y ofrece abrir la página de descargas.
 - Si la app se instaló con el instalador, usa `YT_Downloader_Setup.exe` (instalación silenciosa).
 - Si es el `.exe` suelto, reemplaza el archivo con `YT_Downloader.exe` de la release.
 - Con `py main.py` solo avisa y abre la página de descargas.
@@ -160,6 +164,7 @@ En la pantalla principal quedan la URL, el formato (MP4, MP3, M4A, Opus), la cal
 | **Pausa / Reanudar** | Botón en cada descarga; retoma desde donde quedó |
 | **Quitar de la lista** | Elimina la tarjeta sin borrar el archivo descargado |
 | **Descargas a la vez** | Cuántos videos de la playlist se descargan en paralelo (1–5, default: 2) |
+| **Cookies del navegador** | Desactivado por defecto. Si lo activas (con confirmación), cuando YouTube pide verificar que no eres un robot la app lee la sesión de Firefox, Edge, Chrome o Brave. Alternativa sin tocar el navegador: `cookies.txt` junto a la app |
 
 La carpeta, formato, calidades, velocidad máxima y cantidad de descargas simultáneas se guardan para la próxima sesión. La calidad MP3 solo afecta a MP3 convertido; M4A y Opus conservan el audio original.
 
@@ -176,7 +181,7 @@ Al compilar, elige **L** para no incluir ffmpeg y reducir el tamaño del ejecuta
 ```
 YT_Downloader/
 ├── main.py
-├── models/                      ← Interfaz, servicios, workers y configuración
+├── models/                      ← Interfaz, servicios, workers, registro y configuración
 ├── YT_Downloader.spec           ← Configuración de PyInstaller
 ├── dependencias.bat
 ├── compilar.bat
@@ -186,7 +191,16 @@ YT_Downloader/
 
 ---
 
+## Registro de errores
+
+Los errores inesperados se guardan en `%LOCALAPPDATA%\YT_Downloader\yt_downloader.log` (rotativo, máx. ~1.5 MB). Si ocurre uno, la app lo muestra y **sigue abierta** en lugar de cerrarse. Adjunta ese archivo al reportar un problema.
+
+---
+
 ## Solución de problemas
+
+**"YouTube pide verificar que no eres un robot" / "Sign in to confirm you're not a bot"**
+→ Coloca un `cookies.txt` exportado de tu navegador junto a la app, o activa *Ajustes → Cookies del navegador* (inicia sesión antes en YouTube con ese navegador). Las cookies son información sensible: no compartas ese archivo.
 
 **"Python no encontrado"**
 → Reinstala Python desde [python.org](https://www.python.org/downloads/) marcando *Add Python to PATH*.

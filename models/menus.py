@@ -162,6 +162,15 @@ class WindowMenuMixin:
             "M4A y Opus siempre se descargan sin ffmpeg."
             + ("" if self._ffmpeg_available else "  (ffmpeg no está disponible.)")))
 
+        # Cookies del navegador (opt-in)
+        self.chk_browser_cookies = QCheckBox("Usar cookies del navegador si YouTube lo pide")
+        self.chk_browser_cookies.setChecked(self.use_browser_cookies)
+        self.chk_browser_cookies.toggled.connect(self._on_browser_cookies_change)
+        form.addRow("Cookies", field(
+            self.chk_browser_cookies,
+            "Desactivado por defecto. Solo se usa cuando YouTube pide verificación; lee la "
+            "sesión de Firefox, Edge, Chrome o Brave. Alternativa: cookies.txt junto a la app."))
+
         root.addLayout(form)
         row = QHBoxLayout(); row.addStretch()
         btn = self._btn_ghost("Cerrar"); btn.setFixedHeight(34)

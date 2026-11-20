@@ -44,6 +44,10 @@ def clean_err(e):
                 'descargas en Windows Defender.')
     elif 'private video' in low:
         msg += '\n→ El video es privado: solo su dueño puede descargarlo.'
+    elif is_bot_error(e):
+        msg += ('\n→ YouTube pide verificar que no eres un robot. Opciones: coloca un '
+                'cookies.txt junto a la aplicación, o activa «Usar cookies del navegador» '
+                'en Ajustes (inicia sesión antes en YouTube con ese navegador).')
     elif 'members-only' in low or 'members only' in low:
         msg += '\n→ Es contenido para miembros del canal: requiere cookies.txt de una cuenta con acceso.'
     return msg
@@ -60,9 +64,15 @@ def is_http_416_error(e):
     msg = _raw_err(e).lower()
     return '416' in msg and ('range' in msg or 'requested range' in msg)
 
+_BOT_HINTS = ('not a bot', 'sign in to confirm', 'login required',
+              'http error 403', 'forbidden')
+
+
 def is_bot_error(e):
+    """Frases concretas de YouTube/HTTP. Antes se buscaba '403' o 'sign in' como
+    subcadena suelta y un ID de video o una URL podían dar falsos positivos."""
     m = _raw_err(e).lower()
-    return 'not a bot' in m or 'sign in' in m or '403' in m
+    return any(h in m for h in _BOT_HINTS)
 
 def is_unavailable_error(e):
     m = _raw_err(e).lower()

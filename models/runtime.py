@@ -42,8 +42,11 @@ def find_ffmpeg():
         return None
 
 def _app_dir():
-    return os.path.dirname(sys.executable if getattr(sys, 'frozen', False)
-                           else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    """Carpeta de la app: la del .exe, o la raíz del proyecto en modo desarrollo
+    (la que contiene main.py, no la carpeta superior)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def find_js_runtimes():
     """Devuelve {nombre: {'path': ruta}} de los runtimes JS encontrados:

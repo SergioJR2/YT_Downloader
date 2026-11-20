@@ -110,9 +110,10 @@ class FetchThread(QThread):
     result = pyqtSignal(dict)
     error  = pyqtSignal(str)
 
-    def __init__(self, url):
+    def __init__(self, url, allow_browser_cookies=False):
         super().__init__()
         self.url = url
+        self.allow_browser_cookies = allow_browser_cookies
 
     def run(self):
         try:
@@ -122,19 +123,26 @@ class FetchThread(QThread):
                 **get_cookie_option(),
             }
             info = run_with_auth_fallback(
-                opts, lambda ydl: ydl.extract_info(self.url, download=False))
+                opts, lambda ydl: ydl.extract_info(self.url, download=False),
+                allow_browser_cookies=self.allow_browser_cookies)
 
             if info.get('_type') == 'playlist':
-                entries = info.get('entries', [])
+                # Se descartan entradas vacías y videos privados/eliminados (sin
+                # URL ni ID utilizable); yt-dlp los devuelve con título "[Private video]".
+                entries = [
+                    e for e in (info.get('entries') or [])
+                    if e and (e.get('url') or e.get('id'))
+                    and (e.get('title') or '') not in ('[Private video]', '[Deleted video]')
+                ]
                 self.result.emit({
                     'type': 'playlist',
-                    'title': info.get('title', 'Playlist'),
+                    'title': info.get('title') or 'Playlist',
                     'count': len(entries),
                     'items': [
                         {
-                            'title':    e.get('title', 'Sin título'),
+                            'title':    e.get('title') or 'Sin título',
                             'url':      e.get('url') or f"https://youtube.com/watch?v={e.get('id')}",
-                            'duration': e.get('duration', 0),
+                            'duration': e.get('duration') or 0,
                         }
                         for e in entries[:200]
                     ]
@@ -148,11 +156,13 @@ class FetchThread(QThread):
                 self.result.emit({
                     'type':      'video',
                     'url':       self.url,
-                    'title':     info.get('title', 'Sin título'),
-                    'duration':  info.get('duration', 0),
-                    'thumbnail': info.get('thumbnail', ''),
-                    'channel':   info.get('uploader', ''),
-                    'views':     info.get('view_count', 0),
+                    # Las claves pueden existir con valor None (directos, vistas
+                    # ocultas): "or" evita TypeError al formatearlas en la interfaz.
+                    'title':     info.get('title') or 'Sin título',
+                    'duration':  info.get('duration') or 0,
+                    'thumbnail': info.get('thumbnail') or '',
+                    'channel':   info.get('uploader') or '',
+                    'views':     info.get('view_count') or 0,
                     'qualities': [str(h) for h in heights[:5]],
                 })
         except Exception as e:
@@ -160,10 +170,11 @@ class FetchThread(QThread):
 
 class DownloadThread(QThread):
     progress = pyqtSignal(str, float, str, str)
-    finished = pyqtSignal(str, bool, str)
+    # No se llama "finished" para no tapar la señal nativa QThread.finished.
+    task_finished = pyqtSignal(str, bool, str)
 
     def __init__(self, task_id, url, fmt, quality, output_dir, audio_quality, speed_limit,
-                 use_ffmpeg=True):
+                 use_ffmpeg=True, allow_browser_cookies=False):
         super().__init__()
         self.task_id = task_id
         self.url     = url
@@ -173,7 +184,10 @@ class DownloadThread(QThread):
         self.audio_quality = audio_quality
         self.speed_limit = speed_limit
         self.use_ffmpeg = use_ffmpeg
+        self.allow_browser_cookies = allow_browser_cookies
         self._pause  = False
+        self._streams_done = 0     # archivos (video, audio...) ya descargados por completo
+        self._streams_total = 1    # archivos que bajará yt-dlp para esta tarea
 
     def request_pause(self):
         """Pausa = detener la descarga conservando el archivo .part.
@@ -183,16 +197,40 @@ class DownloadThread(QThread):
     def _hook(self, d):
         if self._pause:
             raise PauseRequested()
+        n = self._streams_total
         if d['status'] == 'downloading':
-            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-            dl    = d.get('downloaded_bytes', 0)
-            speed = d.get('speed', 0) or 0
-            # El total estimado puede quedarse corto; reserva el 100% para cuando
-            # yt-dlp confirme que acabó de recibir el archivo.
-            pct   = min(dl / total * 100, 99) if total else 0
+            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+            dl    = d.get('downloaded_bytes') or 0
+            speed = d.get('speed') or 0
+            frac  = min(dl / total, 1.0) if total else 0
+            # Progreso global: cada archivo ocupa 1/n de la barra, así no retrocede
+            # cuando termina el video y empieza el audio. El total estimado puede
+            # quedarse corto; el 100% se reserva para cuando yt-dlp confirme el final.
+            pct = min((self._streams_done + frac) / n * 100, 99)
             self.progress.emit(self.task_id, pct, self._fmt_speed(speed), 'downloading')
         elif d['status'] == 'finished':
-            self.progress.emit(self.task_id, 100, '', 'processing')
+            self._streams_done += 1
+            if self._streams_done >= n:
+                self.progress.emit(self.task_id, 100, '', 'processing')
+
+    def _run_download(self, ydl):
+        # Cada intento (clientes alternos, cookies...) empieza de cero.
+        self._streams_done = 0
+        self._streams_total = 1
+        # Dentro del hook yt-dlp ya quitó 'requested_formats' de la info de cada
+        # stream, así que el total de archivos (video + audio = 2) se obtiene con un
+        # postprocesador "before_dl", que sí recibe la información completa.
+        from yt_dlp.postprocessor.common import PostProcessor
+        thread = self
+
+        class _CountStreams(PostProcessor):
+            def run(self, information):
+                thread._streams_total = max(
+                    1, len(information.get('requested_formats') or []))
+                return [], information
+
+        ydl.add_post_processor(_CountStreams(ydl), when='before_dl')
+        return ydl.download([self.url])
 
     @staticmethod
     def _fmt_speed(s):
@@ -280,7 +318,9 @@ class DownloadThread(QThread):
             lock_retries = 0
             while True:
                 try:
-                    run_with_auth_fallback(base, lambda ydl: ydl.download([self.url]))
+                    run_with_auth_fallback(
+                        base, self._run_download,
+                        allow_browser_cookies=self.allow_browser_cookies)
                     break
                 except Exception as e:
                     if (not self._pause and not fresh_retry_used
@@ -301,9 +341,9 @@ class DownloadThread(QThread):
                         if self._pause:
                             raise
                         self.msleep(100)
-            self.finished.emit(self.task_id, True, '')
+            self.task_finished.emit(self.task_id, True, '')
         except Exception as e:
             if self._pause:
-                self.finished.emit(self.task_id, False, PAUSED_MSG)
+                self.task_finished.emit(self.task_id, False, PAUSED_MSG)
             else:
-                self.finished.emit(self.task_id, False, clean_err(e))
+                self.task_finished.emit(self.task_id, False, clean_err(e))

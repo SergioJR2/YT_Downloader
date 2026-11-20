@@ -64,6 +64,9 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self.audio_quality = self.settings.value("audio_quality", 192, type=int)
         if self.audio_quality not in (128, 192, 320):
             self.audio_quality = 192
+        # Leer cookies del navegador es opt-in: por defecto la app no toca esos datos.
+        self.use_browser_cookies = self.settings.value(
+            "use_browser_cookies", False, type=bool)
         self._ffmpeg_available = bool(find_ffmpeg())
         self.use_ffmpeg = self.settings.value(
             "use_ffmpeg", self._ffmpeg_available, type=bool) and self._ffmpeg_available
@@ -128,6 +131,7 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         QTimer.singleShot(600, self._check_js_runtime)
 
         # Busca en segundo plano una versión nueva de la app (solo con el .exe)
+        self.fetch_thread = None
         self._app_check = None
         self._app_check_manual = False
         self._app_dl = None
@@ -223,7 +227,8 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
             text += ("\n\nEsta copia no se puede actualizar sola"
                      + (" (se está ejecutando desde el código fuente)."
                         if not getattr(sys, 'frozen', False)
-                        else " (no hay un archivo compatible o la carpeta no permite escribir)."))
+                        else " (no hay un archivo compatible con SHA-256 para verificarlo, o la "
+                           "carpeta no permite escribir)."))
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle("Actualización disponible")
@@ -304,10 +309,16 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
     def fetch_info(self):
         url = self.url_input.text().strip()
         if not url: return
+        # Enter en la caja de texto no pasa por el botón (que se deshabilita): sin
+        # esta guarda, un segundo Enter reasignaba el hilo en marcha y Qt abortaba
+        # con "QThread: Destroyed while thread is still running".
+        if self.fetch_thread is not None and self.fetch_thread.isRunning():
+            return
         self.lbl_error.hide()
         self._clear_result()
         self.btn_fetch.setEnabled(False); self.btn_fetch.setText("…")
-        self.fetch_thread = FetchThread(url)
+        self.fetch_thread = FetchThread(
+            url, allow_browser_cookies=self.use_browser_cookies)
         self.fetch_thread.result.connect(self._on_fetch_ok)
         self.fetch_thread.error.connect(self._on_fetch_err)
         self.fetch_thread.start()
@@ -336,13 +347,19 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         """Al abrir: si falta el motor JavaScript, ofrece instalarlo."""
         if find_js_runtimes():
             return
+        if self.settings.value("js_prompt_declined", False, type=bool):
+            return
         r = QMessageBox.question(
             self, "Falta un componente",
             "YouTube ahora exige un motor JavaScript (Deno) y sin él muchos "
             "videos fallan con «This video is not available».\n\n"
-            "¿Descargarlo e instalarlo ahora? (≈ 43 MB, se hace una sola vez)")
+            "¿Descargarlo e instalarlo ahora? (≈ 43 MB, se hace una sola vez)\n\n"
+            "Si eliges «No», no volveré a preguntar; puedes instalarlo después desde "
+            "Herramientas → Actualizar yt-dlp.")
         if r == QMessageBox.StandardButton.Yes:
             self.update_ytdlp()
+        else:
+            self.settings.setValue("js_prompt_declined", True)
 
 
 
@@ -363,6 +380,22 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
     def _on_audio_quality(self, _index):
         self.audio_quality = int(self.combo_audio_quality.currentData())
         self.settings.setValue("audio_quality", self.audio_quality)
+
+    def _on_browser_cookies_change(self, enabled):
+        if enabled:
+            r = QMessageBox.question(
+                self, "Usar cookies del navegador",
+                "Si YouTube pide verificar que no eres un robot, la app leerá las "
+                "cookies de tu sesión de YouTube desde Firefox, Edge, Chrome o Brave "
+                "(solo para esa petición; no se guardan ni se envían a ningún otro "
+                "sitio).\n\nEs información sensible. ¿Activarlo?")
+            if r != QMessageBox.StandardButton.Yes:
+                self.chk_browser_cookies.blockSignals(True)
+                self.chk_browser_cookies.setChecked(False)
+                self.chk_browser_cookies.blockSignals(False)
+                return
+        self.use_browser_cookies = bool(enabled)
+        self.settings.setValue("use_browser_cookies", self.use_browser_cookies)
 
     def _on_ffmpeg_mode_change(self, omit_ffmpeg):
         self.use_ffmpeg = self._ffmpeg_available and not omit_ffmpeg
@@ -548,9 +581,10 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
             t = DownloadThread(
                 task_id, task['url'], task['fmt'], task['video_quality'],
                 task['output_dir'], task['audio_quality'], task['speed_limit'],
-                task.get('use_ffmpeg', self.use_ffmpeg))
+                task.get('use_ffmpeg', self.use_ffmpeg),
+                allow_browser_cookies=self.use_browser_cookies)
             t.progress.connect(self._on_dl_progress)
-            t.finished.connect(self._on_dl_finished)
+            t.task_finished.connect(self._on_dl_finished)
             t.start()
             self._active_threads[task_id] = t
         self._update_queue_label()

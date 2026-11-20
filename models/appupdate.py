@@ -132,9 +132,13 @@ def check_for_update():
         # Reemplazar el .exe directamente solo si su carpeta admite escritura.
         if kind == 'portable' and not _can_write(_exe_dir()):
             continue
+        sha256 = _asset_sha256(a, assets)
+        if not sha256:
+            # Sin hash publicado no se puede verificar la integridad: no se instala
+            # automáticamente (el usuario puede bajarla desde la página de la release).
+            continue
         info['asset'] = {'kind': kind, 'name': a['name'], 'url': url,
-                         'size': int(a.get('size') or 0),
-                         'sha256': _asset_sha256(a, assets)}
+                         'size': int(a.get('size') or 0), 'sha256': sha256}
         break
     return info
 
@@ -161,6 +165,8 @@ def download_update(asset, progress=None, cancelled=None):
     Devuelve la ruta del archivo listo para aplicar."""
     if not asset['url'].startswith(_DOWNLOAD_PREFIX):
         raise RuntimeError("La dirección de descarga no pertenece al repositorio oficial.")
+    if not asset.get('sha256'):
+        raise RuntimeError("La actualización no incluye un SHA-256 para verificarla.")
     if asset['kind'] == 'portable':
         dest = os.path.join(_exe_dir(), PORTABLE_TMP_NAME)
     else:
@@ -186,7 +192,7 @@ def download_update(asset, progress=None, cancelled=None):
                     progress(done, total)
         if asset['size'] and done != asset['size']:
             raise RuntimeError("La descarga quedó incompleta. Inténtalo de nuevo.")
-        if asset['sha256'] and sha.hexdigest() != asset['sha256']:
+        if sha.hexdigest() != asset['sha256']:
             raise RuntimeError("La descarga está corrupta (el SHA-256 no coincide).")
         with open(tmp, 'rb') as f:
             if f.read(2) != b'MZ':

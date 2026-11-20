@@ -288,7 +288,7 @@ class WindowViewMixin:
         """)
         self.thumb_label.setText("🎬"); self.thumb_label.setPixmap(QPixmap())
         self.lbl_vid_title.setText(data['title'])
-        v = data.get('views', 0)
+        v = data.get('views') or 0   # puede venir None (directos, vistas ocultas)
         vs = f"{v/1e6:.1f}M vistas" if v>1e6 else (f"{v/1e3:.0f}K vistas" if v>1e3 else f"{v} vistas")
         self.lbl_vid_meta.setText(
             f"{data.get('channel','')}   ·   {self._fmt_dur(data.get('duration',0))}   ·   {vs}"

@@ -10,6 +10,15 @@ LIBS_ROOT = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~
 LIBS_META = os.path.join(LIBS_ROOT, "libs_meta.json")
 DENO_DIR = os.path.join(LIBS_ROOT, "deno")
 UPDATE_DIR = os.path.join(LIBS_ROOT, "updates")
+LOG_FILE = os.path.join(LIBS_ROOT, "yt_downloader.log")
+# Deno se instala con versión FIJA y SHA-256 incluido aquí (independiente del servidor
+# de descarga). Para subir de versión: cambia DENO_VERSION y los dos hashes
+# (se publican en <release>/deno-<arch>-pc-windows-msvc.zip.sha256sum).
+DENO_VERSION = "v2.9.8"
+DENO_SHA256 = {
+    "x86_64":  "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf",
+    "aarch64": "b413b92b735b50c198e8fe3b85af1aa50e29d5f72e229aab701d132286e14cef",
+}
 JS_RUNTIMES = ("deno", "node", "bun", "quickjs")
 _JS_BINARY = {"deno": "deno", "node": "node", "bun": "bun", "quickjs": "qjs"}
 BROWSERS = ("firefox", "edge", "chrome", "brave")
