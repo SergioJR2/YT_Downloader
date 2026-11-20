@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 from .config import APP_VERSION, GITHUB_REPO, UPDATE_DIR
+from .runtime import protect_pid
 
 RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases"
 _API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -143,7 +144,8 @@ def check_for_update():
 def cleanup_update_files():
     """Borra restos de actualizaciones anteriores (ignora lo que siga en uso)."""
     leftovers = [os.path.join(_exe_dir(), PORTABLE_TMP_NAME),
-                 os.path.join(_exe_dir(), PORTABLE_TMP_NAME + '.part')] if _is_frozen() else []
+                 os.path.join(_exe_dir(), PORTABLE_TMP_NAME + '.part'),
+                 sys.executable + '.old'] if _is_frozen() else []
     if os.path.isdir(UPDATE_DIR):
         leftovers += [os.path.join(UPDATE_DIR, n) for n in os.listdir(UPDATE_DIR)]
     for p in leftovers:
@@ -216,15 +218,30 @@ def apply_update(path, kind):
     target = sys.executable
     bat = os.path.join(UPDATE_DIR, 'apply_update.bat')
     if kind == 'portable':
+        old = target + '.old'
+        log = os.path.join(UPDATE_DIR, 'update_error.txt')
         lines = [
-            '@chcp 65001 >nul', '@echo off', 'set N=0', ':retry',
+            '@chcp 65001 >nul', '@echo off', 'set N=0',
+            f'del "{_q(log)}" >nul 2>&1',
+            ':retry',
             'ping -n 3 127.0.0.1 >nul',
             f'move /y "{_q(path)}" "{_q(target)}" >nul 2>&1',
             'if not errorlevel 1 goto ok',
             'set /a N+=1',
-            'if %N% lss 30 goto retry',
-            f'start "" "{_q(target)}"',          # no se pudo reemplazar: abre la versión actual
-            'exit /b 1', ':ok',
+            'if %N% lss 5 goto retry',
+            # El .exe sigue bloqueado: Windows deja RENOMBRAR un .exe en uso,
+            # así que se aparta el viejo y se coloca el nuevo en su lugar.
+            f'del "{_q(old)}" >nul 2>&1',
+            f'move /y "{_q(target)}" "{_q(old)}" >nul 2>&1',
+            'if errorlevel 1 goto fail',
+            f'move /y "{_q(path)}" "{_q(target)}" >nul 2>&1',
+            'if not errorlevel 1 goto ok',
+            f'move /y "{_q(old)}" "{_q(target)}" >nul 2>&1',   # deshacer
+            ':fail',
+            f'echo No se pudo reemplazar "{_q(target)}". La version nueva quedo en "{_q(path)}">"{_q(log)}"',
+            f'start "" "{_q(target)}"',
+            'exit /b 1',
+            ':ok',
             f'start "" "{_q(target)}"',
             '(goto) 2>nul & del "%~f0"',
         ]
@@ -240,6 +257,15 @@ def apply_update(path, kind):
     with open(bat, 'w', encoding='utf-8', newline='\r\n') as f:
         f.write('\n'.join(lines) + '\n')
     env = {**os.environ, 'PYINSTALLER_RESET_ENVIRONMENT': '1'}
-    # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: sigue vivo cuando esta app se cierra
-    subprocess.Popen(['cmd', '/c', bat], env=env, close_fds=True,
-                     creationflags=0x08000000 | 0x00000200)
+    # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
+    # cwd fuera de la carpeta del .exe para no bloquearla.
+    flags = 0x08000000 | 0x00000200 | 0x01000000
+    try:
+        proc = subprocess.Popen(['cmd', '/c', bat], env=env, close_fds=True,
+                                cwd=UPDATE_DIR, creationflags=flags)
+    except OSError:      # si el sistema no permite salir del "job", sin ese flag
+        proc = subprocess.Popen(['cmd', '/c', bat], env=env, close_fds=True,
+                                cwd=UPDATE_DIR, creationflags=flags & ~0x01000000)
+    # Sin esto, closeEvent -> kill_child_processes() mataba este script antes de
+    # que reemplazara el .exe (por eso solo quedaba YT_Downloader_update.exe).
+    protect_pid(proc.pid)

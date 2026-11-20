@@ -4,7 +4,7 @@ import os
 APP_NAME = "YT Downloader"
 # Versión de ESTE código. Súbela en cada release (debe coincidir con el tag de GitHub,
 # p. ej. tag V1.3.0 -> "1.3.0"). compilar.bat la pasa también al instalador.
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.4.0"
 GITHUB_REPO = "SergioJR2/YT_Downloader"
 LIBS_ROOT = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), APP_NAME.replace(" ", "_"))
 LIBS_META = os.path.join(LIBS_ROOT, "libs_meta.json")

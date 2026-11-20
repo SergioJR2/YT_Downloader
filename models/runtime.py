@@ -62,13 +62,32 @@ def find_js_runtimes():
             found[name] = {'path': exe}
     return found
 
+# PIDs de procesos auxiliares que deben sobrevivir al cierre de la app
+# (por ejemplo, el script que reemplaza el .exe al actualizar).
+_PROTECTED_PIDS = set()
+
+
+def protect_pid(pid):
+    """Evita que kill_child_processes() termine este proceso ni sus descendientes."""
+    _PROTECTED_PIDS.add(int(pid))
+
+
 def kill_child_processes():
     """Termina los procesos hijos de la app (ffmpeg, deno...). Si uno sigue vivo al
     cerrar, bloquea la carpeta temporal _MEI del .exe y Windows muestra
-    "Failed to remove temporary directory". Requiere psutil (opcional)."""
+    "Failed to remove temporary directory". Requiere psutil (opcional).
+    Se respetan los procesos registrados con protect_pid() (el actualizador)."""
     try:
         import psutil
         kids = psutil.Process().children(recursive=True)
+        if _PROTECTED_PIDS:
+            keep = set(_PROTECTED_PIDS)
+            for pid in _PROTECTED_PIDS:
+                try:
+                    keep.update(c.pid for c in psutil.Process(pid).children(recursive=True))
+                except Exception:
+                    pass
+            kids = [k for k in kids if k.pid not in keep]
         for k in kids:
             try: k.terminate()
             except Exception: pass
