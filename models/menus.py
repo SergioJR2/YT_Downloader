@@ -136,7 +136,7 @@ class WindowMenuMixin:
         # Descargas a la vez
         self.spin_concurrent = QSpinBox()
         self.spin_concurrent.setRange(1, MAX_CONCURRENT)
-        self.spin_concurrent.setValue(self._max_concurrent)
+        self.spin_concurrent.setValue(self.manager.max_concurrent)
         self.spin_concurrent.valueChanged.connect(self._on_concurrent_change)
         form.addRow("Descargas a la vez",
                     field(self.spin_concurrent, f"De 1 a {MAX_CONCURRENT}. Menos = menos carga en PC y red."))

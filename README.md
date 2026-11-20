@@ -58,7 +58,8 @@ Este script:
 - `menus.py` construye la barra de menú y la ventana de Ajustes.
 - `widgets.py` define las filas de playlist y las tarjetas de descarga.
 - `view.py` construye las secciones visuales y representa resultados.
-- `window.py` conserva el estado y coordina eventos y descargas.
+- `manager.py` es la cola de descargas: estado de cada tarea (`TaskState`), límite de descargas simultáneas, pausa, reintento y quitar, sin tocar la interfaz.
+- `window.py` coordina la interfaz: crea las tarjetas y reacciona a las señales del `DownloadManager`.
 - `theme.py` mantiene los colores compartidos.
 - `logs.py` configura el archivo de registro y captura las excepciones no controladas.
 
@@ -181,13 +182,23 @@ Al compilar, elige **L** para no incluir ffmpeg y reducir el tamaño del ejecuta
 ```
 YT_Downloader/
 ├── main.py
-├── models/                      ← Interfaz, servicios, workers, registro y configuración
+├── models/                      ← Interfaz, cola de descargas, servicios, workers, registro y configuración
+├── tests/                       ← Pruebas (pytest)
 ├── YT_Downloader.spec           ← Configuración de PyInstaller
 ├── dependencias.bat
 ├── compilar.bat
 ├── instalador.iss
 └── README.md
 ```
+
+### Pruebas
+
+```
+pip install pytest
+python -m pytest tests
+```
+
+Cubren la comparación de títulos y la cola de descargas (límite simultáneo, pausa, reanudar, error, quitar y cierre). No necesitan red ni abrir ventanas.
 
 ---
 

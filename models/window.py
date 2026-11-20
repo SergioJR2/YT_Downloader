@@ -4,7 +4,6 @@ import platform
 import re
 import subprocess
 import sys
-from collections import deque
 
 from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
@@ -21,19 +20,18 @@ from PyQt6.QtWidgets import (
 )
 
 from .appupdate import RELEASES_URL, apply_update
-from .config import APP_VERSION, DEFAULT_CONCURRENT, DOWNLOAD_DIR, MAX_CONCURRENT
+from .config import APP_VERSION, DEFAULT_CONCURRENT, DOWNLOAD_DIR
 from .downloads import download_name_key
-from .errors import PAUSED_MSG
 from .runtime import find_ffmpeg, find_js_runtimes, kill_child_processes
 from .services import ytdlp_version
 from .theme import C_BG, C_BORDER
+from .manager import DownloadManager, TaskState
 from .widgets import DownloadCard
 from .menus import WindowMenuMixin
 from .view import WindowViewMixin
 from .workers import (
     AppDownloadThread,
     AppUpdateCheckThread,
-    DownloadThread,
     FetchThread,
     ScanThread,
     UpdateThread,
@@ -74,28 +72,18 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self.use_ffmpeg = self.settings.value(
             "use_ffmpeg", self._ffmpeg_available, type=bool) and self._ffmpeg_available
 
-        # ── Cola de descargas (throttled) ──────────────────────────────
-        self._download_queue:   deque = deque()   # task_id en espera
-        self._tasks:            dict  = {}        # task_id → {title,url,fmt,quality}
-        self._stopped:          set   = set()     # task_id en pausa o con error
-        self._remove_when_stopped: set = set()    # tareas activas que se quitarán al pausar
-        self._seq               = 0
-        self._active_threads:   dict  = {}        # task_id → DownloadThread
-        self._finished_threads: list  = []        # threads terminados para liberar
-        self._max_concurrent    = self.settings.value(
-            "max_concurrent", DEFAULT_CONCURRENT, type=int)
-        self._max_concurrent = max(1, min(MAX_CONCURRENT, self._max_concurrent))
+        # ── Cola de descargas ──────────────────────────────────────────
+        self.manager = DownloadManager(
+            self.settings.value("max_concurrent", DEFAULT_CONCURRENT, type=int),
+            parent=self, cookies_allowed=lambda: self.use_browser_cookies)
+        self.manager.progress.connect(self._on_dl_progress)
+        self.manager.state_changed.connect(self._on_task_state)
+        self.manager.task_removed.connect(self._discard_card)
+        self.manager.queue_changed.connect(self._update_queue_label)
         self.speed_limit = self.settings.value("speed_limit_kbps", 0, type=int)
         self.speed_limit = max(0, min(102400, self.speed_limit))
-        self._closing           = False
         self._scan_thread       = None            # revisión de duplicados en curso
         self._pending_start     = None            # datos de la descarga que espera el escaneo
-
-        # Limpieza periódica de threads terminados (cada 5 s)
-        self._gc_timer = QTimer(self)
-        self._gc_timer.setInterval(5000)
-        self._gc_timer.timeout.connect(self._gc_threads)
-        self._gc_timer.start()
 
         # Un solo QNetworkAccessManager reutilizable para thumbnails
         self._net_mgr = QNetworkAccessManager(self)
@@ -255,7 +243,7 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
                 QDesktopServices.openUrl(QUrl(info.get('page') or RELEASES_URL))
 
     def _download_app_update(self, info):
-        if self._active_threads or self._download_queue:
+        if self.manager.has_pending():
             r = QMessageBox.question(
                 self, "Descargas en curso",
                 "Hay descargas activas o en cola. Al actualizar se pausarán (lo ya "
@@ -374,9 +362,8 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
     # ─── Cola de descargas throttled ──────────────────────────────────────
 
     def _on_concurrent_change(self, value):
-        self._max_concurrent = value
-        self.settings.setValue("max_concurrent", value)
-        self._pump_queue()  # Puede haber slots libres si se sube el límite
+        self.manager.max_concurrent = value
+        self.settings.setValue("max_concurrent", self.manager.max_concurrent)
 
     def _on_speed_change(self, value):
         self.speed_limit = value
@@ -465,7 +452,7 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
     def _finish_scan(self):
         th, self._scan_thread = self._scan_thread, None
         if th is not None:
-            self._finished_threads.append(th)   # _gc_threads lo libera al terminar
+            self.manager.retire_thread(th)      # se libera cuando termine
         self.btn_dl_single.setEnabled(True)
         self._update_sel_count()                # reactiva el botón de playlist si procede
 
@@ -479,23 +466,15 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
     def _on_scan_done(self, existing_names):
         pending, self._pending_start = self._pending_start, None
         self._finish_scan()
-        if not pending or self._closing:
+        if not pending or self.manager.closing:
             return
         items, fmt, q = pending['items'], pending['fmt'], pending['q']
         tag, media_kind = pending['tag'], pending['media_kind']
         use_ffmpeg, output_dir = pending['use_ffmpeg'], pending['output_dir']
 
-        # Reserva nombres de tareas activas, en cola, pausadas o fallidas para que
-        # dos archivos del mismo tipo con el mismo título no colisionen.
-        active_ids = set(self._active_threads) | set(self._download_queue) | self._stopped
-        output_dir_key = os.path.normcase(os.path.abspath(output_dir))
-        reserved_names = {
-            (('video' if task['fmt'] == 'mp4' else 'audio'),
-             download_name_key(task['title']))
-            for task_id, task in self._tasks.items()
-            if task_id in active_ids
-            and os.path.normcase(os.path.abspath(task['output_dir'])) == output_dir_key
-        }
+        # Nombres de tareas activas, en cola, pausadas o fallidas: dos archivos del
+        # mismo tipo con el mismo título no deben colisionar.
+        reserved_names = self.manager.reserved_names(output_dir)
         skipped_existing = []
         skipped_reserved = []
         enqueued = 0
@@ -509,40 +488,24 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
             if reservation in reserved_names:
                 skipped_reserved.append(title)
                 continue
-
-            # Evita encolar de nuevo la misma combinación de video, formato y
-            # calidad si su tarjeta sigue activa, en cola o pausada.
-            busy = any(
-                t['url'] == u and t['fmt'] == fmt and t['quality'] == q
-                and (tid in self._active_threads or tid in self._download_queue
-                     or tid in self._stopped)
-                for tid, t in self._tasks.items()
-            )
-            if busy:
+            if self.manager.is_busy(u, fmt, q):
                 continue
-            self._seq += 1
-            task_id = f"{re.sub(r'[^a-zA-Z0-9]', '_', u)[:30]}_{fmt}_{q}_{self._seq}"
-            self._tasks[task_id] = {
-                'title': title, 'url': u, 'fmt': fmt, 'quality': q,
-                'video_quality': self.selected_quality,
-                'audio_quality': self.audio_quality,
-                'output_dir': output_dir,
-                'speed_limit': self.speed_limit,
-                'use_ffmpeg': use_ffmpeg,
-            }
-            card = DownloadCard(task_id, title, tag)
-            card.action_clicked.connect(self.toggle_task)
-            card.remove_clicked.connect(self.remove_download)
-            self.download_cards[task_id] = card
+            task = self.manager.add_task(
+                title=title, url=u, fmt=fmt, quality=q,
+                video_quality=self.selected_quality, audio_quality=self.audio_quality,
+                output_dir=output_dir, speed_limit=self.speed_limit,
+                use_ffmpeg=use_ffmpeg)
+            card = DownloadCard(task.id, title, tag)
+            card.action_clicked.connect(self.manager.toggle)
+            card.remove_clicked.connect(self.manager.remove)
+            self.download_cards[task.id] = card
             self.dl_list_layout.insertWidget(0, card)
-            self._download_queue.append(task_id)
             reserved_names.add(reservation)
             enqueued += 1
 
         if enqueued:
             self.dl_panel.show()
-        self._pump_queue()
-        self._update_queue_label()
+        self.manager.pump()
 
         if skipped_existing or skipped_reserved:
             details = []
@@ -563,44 +526,33 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
                 self, "Descargas omitidas",
                 "\n\n".join(details) + f"\n\nCarpeta revisada:\n{output_dir}")
 
-    def toggle_task(self, task_id):
-        """Botón de la tarjeta: pausar (si descarga o espera) o reanudar/reintentar."""
+    # ─── Reacción a la cola (el estado vive en DownloadManager) ───────────
+
+    def _on_task_state(self, task_id, state, message):
         card = self.download_cards.get(task_id)
-        if not card: return
-        if task_id in self._active_threads:
-            self._active_threads[task_id].request_pause()
-            card.set_pausing()
-        elif task_id in self._download_queue:
-            self._download_queue.remove(task_id)
-            self._stopped.add(task_id)
-            card.set_paused()
-            self._update_queue_label()
-        elif task_id in self._stopped:
-            self._stopped.discard(task_id)
+        if card is None:
+            return
+        if state is TaskState.RUNNING:
+            card.set_running(); card.set_starting()
+        elif state is TaskState.QUEUED:
             card.set_running()
-            self._download_queue.appendleft(task_id)
-            self._pump_queue()
-
-    def remove_download(self, task_id):
-        """Quita una tarea de la lista; si está activa, la pausa primero."""
-        card = self.download_cards.get(task_id)
-        if not card:
-            return
-        if task_id in self._active_threads:
-            self._remove_when_stopped.add(task_id)
+        elif state is TaskState.PAUSING:
+            card.set_pausing()
+        elif state is TaskState.REMOVING:
             card.set_removing()
-            self._active_threads[task_id].request_pause()
-            return
-        if task_id in self._download_queue:
-            self._download_queue.remove(task_id)
-        self._discard_download(task_id)
-        self._pump_queue()
+        elif state is TaskState.PAUSED:
+            card.set_paused()
+        elif state is TaskState.ERROR:
+            card.set_error(message)
+        elif state is TaskState.DONE:
+            card.set_done()
 
-    def _discard_download(self, task_id):
-        """Elimina solo la tarjeta y el estado en memoria, nunca el archivo."""
-        self._remove_when_stopped.discard(task_id)
-        self._stopped.discard(task_id)
-        self._tasks.pop(task_id, None)
+    def _on_dl_progress(self, task_id, pct, speed, status):
+        card = self.download_cards.get(task_id)
+        if card: card.update_progress(pct, speed, status)
+
+    def _discard_card(self, task_id):
+        """Quita solo la tarjeta, nunca el archivo descargado."""
         card = self.download_cards.pop(task_id, None)
         if card:
             self.dl_list_layout.removeWidget(card)
@@ -608,80 +560,23 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         if not self.download_cards:
             self.dl_panel.hide()
 
-    def _pump_queue(self):
-        """Lanza descargas hasta llenar los slots disponibles."""
-        if self._closing:
-            return
-        while self._download_queue and len(self._active_threads) < self._max_concurrent:
-            task_id = self._download_queue.popleft()
-            task = self._tasks[task_id]
-            card = self.download_cards.get(task_id)
-            if card:
-                card.set_running()
-                card.set_starting()
-            t = DownloadThread(
-                task_id, task['url'], task['fmt'], task['video_quality'],
-                task['output_dir'], task['audio_quality'], task['speed_limit'],
-                task.get('use_ffmpeg', self.use_ffmpeg),
-                allow_browser_cookies=self.use_browser_cookies)
-            t.progress.connect(self._on_dl_progress)
-            t.task_finished.connect(self._on_dl_finished)
-            t.start()
-            self._active_threads[task_id] = t
-        self._update_queue_label()
-
     def _update_queue_label(self):
-        active = len(self._active_threads)
-        queued = len(self._download_queue)
-        if active == 0 and queued == 0:
+        active = self.manager.active_count
+        queued = self.manager.queued_ids()
+        if active == 0 and not queued:
             self.lbl_queue_info.setText("")
             return
         parts = []
         if active:  parts.append(f"{active} activa{'s' if active!=1 else ''}")
-        if queued:  parts.append(f"{queued} en cola")
+        if queued:  parts.append(f"{len(queued)} en cola")
         self.lbl_queue_info.setText("  ·  ".join(parts))
         # Actualizar etiqueta de posición en cola
-        for i, tid in enumerate(self._download_queue):
+        for i, tid in enumerate(queued):
             c = self.download_cards.get(tid)
             if c: c.set_queued(i + 1)
 
-    def _on_dl_progress(self, task_id, pct, speed, status):
-        card = self.download_cards.get(task_id)
-        if card: card.update_progress(pct, speed, status)
-
-    def _on_dl_finished(self, task_id, ok, msg):
-        if task_id in self._remove_when_stopped:
-            self._discard_download(task_id)
-        card = self.download_cards.get(task_id)
-        if card:
-            if ok:
-                card.set_done()
-            elif msg == PAUSED_MSG:
-                self._stopped.add(task_id); card.set_paused()
-            else:
-                self._stopped.add(task_id); card.set_error(msg)
-        # Mover el thread a la lista de limpieza
-        t = self._active_threads.pop(task_id, None)
-        if t:
-            self._finished_threads.append(t)
-        # Lanzar siguiente en cola
-        self._pump_queue()
-
     def closeEvent(self, event):
-        self._closing = True
-        threads = list(self._active_threads.values())
-        for t in threads: t.request_pause()
-        # No destruir la ventana mientras un QThread sigue usando la aplicación.
-        waited = 0
-        for t in threads:
-            while not t.wait(100):
-                QApplication.processEvents()
-                waited += 100
-                # Una conversión (ffmpeg) no se puede pausar: pasados 3 s se cierra
-                # el proceso para que la app termine limpia.
-                if waited >= 3000 and waited % 1000 == 0:
-                    kill_child_processes()
-        kill_child_processes()
+        self.manager.shutdown()
         # Hilos auxiliares: si siguen vivos al destruir la ventana, Qt aborta con
         # "QThread: Destroyed while thread is still running".
         for th in (self.fetch_thread, getattr(self, '_upd', None), self._scan_thread,
@@ -693,16 +588,6 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
                     th.terminate(); th.wait(500)
         kill_child_processes()   # p. ej. el pip de una actualización interrumpida
         event.accept()
-
-    def _gc_threads(self):
-        """Libera threads que ya terminaron para no acumularlos en memoria."""
-        still_alive = []
-        for t in self._finished_threads:
-            if t.isFinished():
-                t.deleteLater()
-            else:
-                still_alive.append(t)
-        self._finished_threads = still_alive
 
     # ─── Resto de lógica ──────────────────────────────────────────────────
 
