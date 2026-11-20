@@ -3,6 +3,7 @@ from PyQt6.QtCore import QPoint, Qt, QUrl
 from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QImage, QPainter, QPalette, QPixmap, QPolygon
 from PyQt6.QtNetwork import QNetworkRequest
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -16,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .config import APP_VERSION, MAX_CONCURRENT
+from .config import APP_VERSION, MAX_CONCURRENT, PLAYLIST_PAGE
 from .services import ytdlp_version
 from .theme import (
     C_ACCENT,
@@ -248,6 +249,10 @@ class WindowViewMixin:
         self.pl_rows_layout.addStretch()
         self.pl_scroll.setWidget(self.pl_inner)
         lay.addWidget(self.pl_scroll)
+        self.btn_pl_more = self._btn_sel("")
+        self.btn_pl_more.clicked.connect(lambda: self._add_playlist_rows(PLAYLIST_PAGE))
+        self.btn_pl_more.hide()
+        lay.addWidget(self.btn_pl_more)
         act = QHBoxLayout(); act.setSpacing(10)
         self.btn_dl_pl = self._btn_primary("↓  Descargar seleccionados")
         self.btn_dl_pl.setFixedHeight(40)
@@ -302,10 +307,14 @@ class WindowViewMixin:
             item = self.pl_rows_layout.takeAt(0)
             if item.widget(): item.widget().deleteLater()
         self.lbl_pl_title.setText(data['title'])
-        shown = len(data['items'])
-        suffix = f" · mostrando {shown} primeros" if data['count'] > shown else ""
-        self.lbl_pl_count.setText(f"{data['count']} videos{suffix}")
-        for i, item in enumerate(data['items']):
+        self._pl_items = data['items']
+        self._pl_total = data['count']
+        self._add_playlist_rows(PLAYLIST_PAGE)
+
+    def _add_playlist_rows(self, amount):
+        """Muestra `amount` videos más de la playlist (se cargan por páginas)."""
+        start = len(self.playlist_rows)
+        for i, item in enumerate(self._pl_items[start:start + amount], start):
             row_w = PlaylistRow(i+1, item['title'], item.get('duration', 0), item['url'])
             row_w.toggled.connect(self._update_sel_count)
             sep = QFrame()
@@ -318,7 +327,27 @@ class WindowViewMixin:
             wl.addWidget(row_w); wl.addWidget(sep)
             self.pl_rows_layout.insertWidget(self.pl_rows_layout.count()-1, wrap)
             self.playlist_rows.append(row_w)
+        shown, loaded = len(self.playlist_rows), len(self._pl_items)
+        text = f"{self._pl_total} videos"
+        if self._pl_total > loaded:
+            text += f" · se cargaron los primeros {loaded}"
+        if shown < loaded:
+            text += f" · mostrando {shown}"
+        self.lbl_pl_count.setText(text)
+        remaining = loaded - shown
+        self.btn_pl_more.setVisible(remaining > 0)
+        if remaining > 0:
+            self.btn_pl_more.setText(f"⌄  Mostrar {min(PLAYLIST_PAGE, remaining)} más  ({remaining} sin mostrar)")
         self._update_sel_count()
+
+    def _show_all_playlist_rows(self):
+        remaining = len(self._pl_items) - len(self.playlist_rows)
+        if remaining > 0:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                self._add_playlist_rows(remaining)
+            finally:
+                QApplication.restoreOverrideCursor()
 
     def _update_sel_count(self):
         n     = sum(1 for r in self.playlist_rows if r.is_checked())
@@ -331,17 +360,19 @@ class WindowViewMixin:
         )
 
     def _set_all(self, value: bool):
+        if value: self._show_all_playlist_rows()   # «Todos» incluye lo aún no mostrado
         for r in self.playlist_rows: r.set_checked(value)
         self._update_sel_count()
 
     def _invert(self):
+        self._show_all_playlist_rows()
         for r in self.playlist_rows: r.set_checked(not r.is_checked())
         self._update_sel_count()
 
     def reset(self):
         self.url_input.clear()
         self.info_card.hide(); self.pl_card.hide(); self.lbl_error.hide()
-        self.current_info = None; self.playlist_rows.clear()
+        self.current_info = None; self.playlist_rows.clear(); self._pl_items = []
         self.thumb_label.setText("🎬"); self.thumb_label.setPixmap(QPixmap())
 
     def _load_thumb(self, url):

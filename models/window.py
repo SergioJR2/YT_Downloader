@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 
 from .appupdate import RELEASES_URL, apply_update
 from .config import APP_VERSION, DEFAULT_CONCURRENT, DOWNLOAD_DIR, MAX_CONCURRENT
-from .downloads import download_name_key, existing_download_names
+from .downloads import download_name_key
 from .errors import PAUSED_MSG
 from .runtime import find_ffmpeg, find_js_runtimes, kill_child_processes
 from .services import ytdlp_version
@@ -35,6 +35,7 @@ from .workers import (
     AppUpdateCheckThread,
     DownloadThread,
     FetchThread,
+    ScanThread,
     UpdateThread,
 )
 
@@ -55,6 +56,8 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self.current_info     = None
         self.download_cards   = {}
         self.playlist_rows    = []
+        self._pl_items        = []
+        self._pl_total        = 0
         self.selected_fmt     = self.settings.value("format", "mp4", type=str)
         if self.selected_fmt not in ('mp4', 'mp3', 'm4a', 'opus'):
             self.selected_fmt = 'mp4'
@@ -85,6 +88,8 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self.speed_limit = self.settings.value("speed_limit_kbps", 0, type=int)
         self.speed_limit = max(0, min(102400, self.speed_limit))
         self._closing           = False
+        self._scan_thread       = None            # revisión de duplicados en curso
+        self._pending_start     = None            # datos de la descarga que espera el escaneo
 
         # Limpieza periódica de threads terminados (cada 5 s)
         self._gc_timer = QTimer(self)
@@ -418,7 +423,11 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self.lbl_output_dir.setToolTip(folder)
 
     def start_download(self):
+        """Prepara la descarga y revisa duplicados en un hilo aparte; el resto
+        continúa en _on_scan_done."""
         if not self.current_info: return
+        if self._scan_thread is not None and self._scan_thread.isRunning():
+            return
         url = self.url_input.text().strip()
         if self.current_info['type'] == 'playlist':
             items = [(r.title_full, r.url) for r in self.playlist_rows if r.is_checked()]
@@ -438,18 +447,48 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
             tag = 'MP4' + ('' if q == 'best' else f' {q}p')
 
         media_kind = 'video' if fmt == 'mp4' else 'audio'
-        try:
-            existing_names = existing_download_names(self.output_dir, media_kind)
-        except OSError as e:
-            QMessageBox.warning(
-                self, "No se pudo revisar la carpeta",
-                f"No se puede comprobar si ya existen esos archivos:\n\n{e}")
+        # Se guardan los valores de AHORA: si el usuario cambia formato o carpeta
+        # mientras se revisa, la descarga sigue siendo la que pidió.
+        self._pending_start = {
+            'items': items, 'fmt': fmt, 'q': q, 'tag': tag,
+            'media_kind': media_kind, 'use_ffmpeg': use_ffmpeg,
+            'output_dir': self.output_dir,
+        }
+        self.btn_dl_single.setEnabled(False)
+        self.btn_dl_pl.setEnabled(False)
+        th = ScanThread(self.output_dir, media_kind)
+        th.done.connect(self._on_scan_done)
+        th.failed.connect(self._on_scan_failed)
+        self._scan_thread = th
+        th.start()
+
+    def _finish_scan(self):
+        th, self._scan_thread = self._scan_thread, None
+        if th is not None:
+            self._finished_threads.append(th)   # _gc_threads lo libera al terminar
+        self.btn_dl_single.setEnabled(True)
+        self._update_sel_count()                # reactiva el botón de playlist si procede
+
+    def _on_scan_failed(self, err):
+        self._pending_start = None
+        self._finish_scan()
+        QMessageBox.warning(
+            self, "No se pudo revisar la carpeta",
+            f"No se puede comprobar si ya existen esos archivos:\n\n{err}")
+
+    def _on_scan_done(self, existing_names):
+        pending, self._pending_start = self._pending_start, None
+        self._finish_scan()
+        if not pending or self._closing:
             return
+        items, fmt, q = pending['items'], pending['fmt'], pending['q']
+        tag, media_kind = pending['tag'], pending['media_kind']
+        use_ffmpeg, output_dir = pending['use_ffmpeg'], pending['output_dir']
 
         # Reserva nombres de tareas activas, en cola, pausadas o fallidas para que
         # dos archivos del mismo tipo con el mismo título no colisionen.
         active_ids = set(self._active_threads) | set(self._download_queue) | self._stopped
-        output_dir_key = os.path.normcase(os.path.abspath(self.output_dir))
+        output_dir_key = os.path.normcase(os.path.abspath(output_dir))
         reserved_names = {
             (('video' if task['fmt'] == 'mp4' else 'audio'),
              download_name_key(task['title']))
@@ -487,7 +526,7 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
                 'title': title, 'url': u, 'fmt': fmt, 'quality': q,
                 'video_quality': self.selected_quality,
                 'audio_quality': self.audio_quality,
-                'output_dir': self.output_dir,
+                'output_dir': output_dir,
                 'speed_limit': self.speed_limit,
                 'use_ffmpeg': use_ffmpeg,
             }
@@ -513,14 +552,16 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
                         if len(skipped_existing) > 5 else "")
                 details.append(
                     f"{len(skipped_existing)} omitido(s): ya existe un archivo del "
-                    f"mismo tipo con ese nombre.\n{examples}{more}")
+                    f"mismo tipo con ese nombre (se ignoran etiquetas como «Official "
+                    f"Video» o «Lyrics»; un «Remix» o «Live» cuenta como otra versión).\n"
+                    f"{examples}{more}")
             if skipped_reserved:
                 details.append(
                     f"{len(skipped_reserved)} omitido(s): ya hay una descarga con "
                     "ese nombre activa, en cola, pausada o lista para reintentar.")
             QMessageBox.information(
                 self, "Descargas omitidas",
-                "\n\n".join(details) + f"\n\nCarpeta revisada:\n{self.output_dir}")
+                "\n\n".join(details) + f"\n\nCarpeta revisada:\n{output_dir}")
 
     def toggle_task(self, task_id):
         """Botón de la tarjeta: pausar (si descarga o espera) o reanudar/reintentar."""
@@ -641,12 +682,16 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
                 if waited >= 3000 and waited % 1000 == 0:
                     kill_child_processes()
         kill_child_processes()
-        for th in (self._app_check, self._app_dl):
+        # Hilos auxiliares: si siguen vivos al destruir la ventana, Qt aborta con
+        # "QThread: Destroyed while thread is still running".
+        for th in (self.fetch_thread, getattr(self, '_upd', None), self._scan_thread,
+                   self._app_check, self._app_dl):
             if th is not None and th.isRunning():
                 if hasattr(th, 'cancel'):
                     th.cancel()
                 if not th.wait(2000):
                     th.terminate(); th.wait(500)
+        kill_child_processes()   # p. ej. el pip de una actualización interrumpida
         event.accept()
 
     def _gc_threads(self):

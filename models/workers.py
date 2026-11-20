@@ -12,7 +12,8 @@ from .appupdate import (
     cleanup_update_files,
     download_update,
 )
-from .config import LOCK_RETRIES, LOCK_RETRY_DELAY
+from .config import LOCK_RETRIES, LOCK_RETRY_DELAY, PLAYLIST_MAX
+from .downloads import existing_download_names
 from .errors import (
     PAUSED_MSG,
     PauseRequested,
@@ -36,8 +37,10 @@ class UpdateThread(QThread):
             if getattr(sys, 'frozen', False):
                 changed, msg = portable_update_ytdlp()
                 js_changed, js_msg = ensure_js_runtime()
-                self.done.emit(True, msg + "\n" + js_msg
-                               + "\nffmpeg: ya va incluido en la app.",
+                ffmpeg_msg = ("ffmpeg: incluido en la app." if find_ffmpeg()
+                              else "ffmpeg: no incluido en esta versión "
+                                   "(MP3 requiere ffmpeg instalado aparte).")
+                self.done.emit(True, msg + "\n" + js_msg + "\n" + ffmpeg_msg,
                                changed or js_changed)
                 return
             pkgs   = ['yt-dlp', 'yt-dlp-ejs', 'imageio-ffmpeg']
@@ -106,6 +109,23 @@ class AppDownloadThread(QThread):
         except Exception as e:
             self.done.emit(False, clean_err(e))
 
+class ScanThread(QThread):
+    """Revisa la carpeta de destino (y subcarpetas) fuera del hilo de la interfaz,
+    para que una biblioteca grande o un disco de red no congelen la ventana."""
+    done = pyqtSignal(dict)    # {clave de nombre: archivo existente}
+    failed = pyqtSignal(str)
+
+    def __init__(self, folder, media_kind):
+        super().__init__()
+        self.folder = folder
+        self.media_kind = media_kind
+
+    def run(self):
+        try:
+            self.done.emit(existing_download_names(self.folder, self.media_kind))
+        except Exception as e:
+            self.failed.emit(str(e))
+
 class FetchThread(QThread):
     result = pyqtSignal(dict)
     error  = pyqtSignal(str)
@@ -144,7 +164,7 @@ class FetchThread(QThread):
                             'url':      e.get('url') or f"https://youtube.com/watch?v={e.get('id')}",
                             'duration': e.get('duration') or 0,
                         }
-                        for e in entries[:200]
+                        for e in entries[:PLAYLIST_MAX]
                     ]
                 })
             else:

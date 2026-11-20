@@ -9,7 +9,7 @@ Aplicación de escritorio para Windows que descarga videos y audios de YouTube s
 | Requisito | Cómo obtenerlo |
 |-----------|---------------|
 | **Windows 10 / 11** | — |
-| **Python 3.8 o superior** | [python.org/downloads](https://www.python.org/downloads/) — marcar ✅ *Add Python to PATH* |
+| **Python 3.11 o superior** (desarrollado con 3.12) | [python.org/downloads](https://www.python.org/downloads/) — marcar ✅ *Add Python to PATH* |
 
 > **ffmpeg ya no es necesario.** Sin él, el audio se guarda en M4A (calidad original) y el video en MP4 de hasta 720p. Si `imageio-ffmpeg` está instalado (lo hace `dependencias.bat`) o ffmpeg está en el PATH, se activa MP3 real y video hasta 1080p+.
 
@@ -25,8 +25,8 @@ Doble clic en  dependencias.bat
 ```
 Este script:
 - Verifica que Python esté instalado
-- Intenta instalar ffmpeg automáticamente con `winget`
-- Instala PyQt6, yt-dlp y PyInstaller vía pip
+- Instala PyQt6, yt-dlp, PyInstaller y psutil vía pip
+- Instala `imageio-ffmpeg` (opcional), que trae un ffmpeg listo para MP3 sin tocar el PATH
 
 Solo necesitas hacerlo **una vez** (o cuando actualices dependencias).
 
@@ -52,8 +52,8 @@ Este script:
 - `runtime.py` localiza ffmpeg, runtimes JavaScript y archivos auxiliares.
 - `services.py` reúne la lógica de yt-dlp, autenticación y actualizaciones.
 - `errors.py` normaliza y clasifica errores.
-- `workers.py` ejecuta análisis, descargas y actualizaciones en hilos.
-- `downloads.py` compara los títulos con nombres de archivos existentes (incluye subcarpetas).
+- `workers.py` ejecuta análisis, revisión de duplicados, descargas y actualizaciones en hilos.
+- `downloads.py` compara los títulos con nombres de archivos existentes (incluye subcarpetas), ignorando etiquetas de relleno como «Official Video».
 - `appupdate.py` consulta GitHub Releases, descarga, verifica y aplica las actualizaciones de la app.
 - `menus.py` construye la barra de menú y la ventana de Ajustes.
 - `widgets.py` define las filas de playlist y las tarjetas de descarga.
@@ -95,11 +95,11 @@ Cada descarga tiene su propio botón:
 - **↻ Reintentar** aparece si hubo un error.
 - **✕ Quitar de la lista** elimina la tarjeta, pero no borra archivos descargados. Si está descargando, la pausa y la quita al detenerse; el archivo parcial se conserva.
 
-Si cierras la app con descargas en curso, se pausan solas y puedes volver a bajarlas después (retoma el archivo parcial).
+Si cierras la app con descargas en curso o con un análisis/actualización a medias, se pausan solas y puedes volver a bajarlas después (retoma el archivo parcial).
 
 ### Evitar archivos duplicados
 
-Antes de iniciar una descarga, la app revisa los nombres de audio o video del mismo tipo en la carpeta de destino **y en todas sus subcarpetas** (se ignoran las carpetas ocultas o de sistema, como `.git` o `$RECYCLE.BIN`). Así puedes organizar tus descargas en carpetas y no se vuelven a bajar; el aviso muestra la ruta relativa del archivo encontrado. Si ya hay un archivo del mismo tipo con ese nombre base, lo omite aunque la extensión sea distinta. Por ejemplo, `Título.mp3` no bloquea la descarga de `Título.mp4`, pero sí evita otra descarga de audio llamada `Título`. La comparación no distingue mayúsculas. También evita poner en cola dos descargas del mismo tipo que producirían el mismo nombre.
+Antes de iniciar una descarga, la app revisa los nombres de audio o video del mismo tipo en la carpeta de destino **y en todas sus subcarpetas** (se ignoran las carpetas ocultas o de sistema, como `.git` o `$RECYCLE.BIN`). Así puedes organizar tus descargas en carpetas y no se vuelven a bajar; el aviso muestra la ruta relativa del archivo encontrado. Si ya hay un archivo del mismo tipo con ese nombre base, lo omite aunque la extensión sea distinta. Por ejemplo, `Título.mp3` no bloquea la descarga de `Título.mp4`, pero sí evita otra descarga de audio llamada `Título`. La comparación no distingue mayúsculas y **ignora etiquetas de relleno** entre paréntesis o corchetes, o al final del título: `Official Video`, `Official Audio`, `Video Oficial`, `Lyrics`, `Letra`, `Visualizer`, `HD`, `4K`... Así `Artista - Canción (Official Video)` y `Artista - Canción (Official Audio)` cuentan como la misma canción. Cualquier otra etiqueta se conserva y hace que sea otra versión: `(Remix)`, `(Live)`, `(Acoustic)`, `(feat. X)`. El artista que venga en el título también cuenta, por lo que `Artista A - Canción` y `Artista B - Canción` no se confunden. Las palabras ignoradas están en `_NOISE_WORDS` de `models/downloads.py`. La revisión se hace en segundo plano, sin congelar la ventana. También evita poner en cola dos descargas del mismo tipo que producirían el mismo nombre.
 
 M4A y Opus se descargan sin conversión y no necesitan ffmpeg. Opus se guarda en su contenedor WebM. MP3 requiere ffmpeg; si no está disponible, la app conserva el audio original sin conversión. Cada tarjeta muestra el formato descargado.
 
@@ -130,9 +130,9 @@ Busca en las [Releases de GitHub](https://github.com/SergioJR2/YT_Downloader/rel
 
 ### Descargar playlists
 
-Cuando pegas una URL de playlist, la app muestra hasta 200 videos con checkboxes e indica si hay más elementos. Puedes:
+Cuando pegas una URL de playlist, la app carga hasta 1000 videos y los muestra de 200 en 200 (botón **Mostrar más**) con checkboxes; indica cuántos hay en total. Puedes:
 - Seleccionar / deseleccionar videos individualmente
-- Usar los botones **Todos**, **Ninguno** o **Invertir**
+- Usar los botones **Todos** (incluye los aún no mostrados), **Ninguno** o **Invertir**
 - Controlar cuántos videos se descargan a la vez (1–5) para no saturar la conexión
 
 ---

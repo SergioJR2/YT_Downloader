@@ -27,6 +27,9 @@ ALT_CLIENTS = ("default", "tv", "web_safari", "mweb")
 DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Descargas_YouTube")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+PLAYLIST_PAGE = 200     # filas que se muestran de una vez en una playlist
+PLAYLIST_MAX = 1000     # máximo de videos que se cargan de una playlist
+
 DEFAULT_CONCURRENT = 2
 MAX_CONCURRENT = 5
 LOCK_RETRIES = 4

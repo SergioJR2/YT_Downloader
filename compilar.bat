@@ -46,8 +46,12 @@ set "ISCC="
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
 if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
-set "APPVER=1.2.0"
+set "APPVER="
 for /f "delims=" %%v in ('python -c "from models.config import APP_VERSION; print(APP_VERSION)"') do set "APPVER=%%v"
+if not defined APPVER (
+    echo  ERROR: No se pudo leer APP_VERSION de models\config.py.
+    pause & exit /b 1
+)
 if defined ISCC (
     "%ISCC%" /DAppVersion=%APPVER% instalador.iss
     if errorlevel 1 (

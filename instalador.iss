@@ -4,7 +4,8 @@
 #define AppName    "YT Downloader"
 #ifndef AppVersion
   ; compilar.bat lo reemplaza con APP_VERSION de models\config.py (ISCC /DAppVersion=...)
-  #define AppVersion "1.2.0"
+  ; Valor de respaldo: mantenerlo igual a APP_VERSION de models\config.py
+  #define AppVersion "1.4.0"
 #endif
 #define AppExe     "YT_Downloader.exe"
 
