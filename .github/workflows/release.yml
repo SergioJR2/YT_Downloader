@@ -1,0 +1,94 @@
+name: Release
+
+# Publica una release al subir un tag (p. ej. V1.5.0). El tag debe coincidir con
+# APP_VERSION de models/config.py. También se puede lanzar a mano (Actions >
+# Release > Run workflow) para probar la compilación sin publicar nada.
+on:
+  push:
+    tags: ["V*", "v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      YT_INCLUDE_FFMPEG: "1"   # 1 = versión Completa (con ffmpeg), 0 = Ligera
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: python -m pip install -U pyinstaller PyQt6 "yt-dlp[default]" imageio-ffmpeg psutil pytest
+
+      - name: Leer APP_VERSION
+        id: ver
+        run: |
+          $v = (python -c "from models.config import APP_VERSION; print(APP_VERSION)").Trim()
+          if (-not $v) { throw "No se pudo leer APP_VERSION de models/config.py" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Verificar que el tag coincide con APP_VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+          APPVER: ${{ steps.ver.outputs.version }}
+        run: |
+          $tagVer = $env:TAG -replace '^[vV]', ''
+          if ($tagVer -ne $env:APPVER) {
+            throw "El tag '$($env:TAG)' no coincide con APP_VERSION '$($env:APPVER)'. Corrige models/config.py o el tag."
+          }
+
+      - name: Ejecutar pruebas
+        run: python -m pytest tests -v
+
+      - name: Compilar .exe con PyInstaller
+        run: python -m PyInstaller YT_Downloader.spec --noconfirm --clean
+
+      - name: Instalar Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Crear instalador (Setup)
+        env:
+          APPVER: ${{ steps.ver.outputs.version }}
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "$env:ProgramFiles\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVersion=$($env:APPVER)" instalador.iss
+          if ($LASTEXITCODE -ne 0) { throw "Falló Inno Setup" }
+
+      - name: Generar SHA-256
+        # La app solo se autoactualiza si la release publica el hash (<archivo>.sha256)
+        run: |
+          foreach ($f in 'dist\YT_Downloader.exe', 'instalador\YT_Downloader_Setup.exe') {
+            $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+            "$h  $(Split-Path $f -Leaf)" | Out-File -Encoding ascii "$f.sha256"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YT_Downloader-${{ steps.ver.outputs.version }}
+          path: |
+            dist/YT_Downloader.exe*
+            instalador/YT_Downloader_Setup.exe*
+          if-no-files-found: error
+
+      - name: Publicar release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create $env:TAG `
+            dist/YT_Downloader.exe `
+            dist/YT_Downloader.exe.sha256 `
+            instalador/YT_Downloader_Setup.exe `
+            instalador/YT_Downloader_Setup.exe.sha256 `
+            --title "YT Downloader $($env:TAG)" `
+            --generate-notes
