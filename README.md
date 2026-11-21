@@ -124,10 +124,15 @@ Busca en las [Releases de GitHub](https://github.com/SergioJR2/YT_Downloader/rel
 - Si es el `.exe` suelto, reemplaza el archivo con `YT_Downloader.exe` de la release.
 - Con `py main.py` solo avisa y abre la página de descargas.
 
-**Para publicar una versión nueva:**
-1. Sube `APP_VERSION` en `models/config.py` (p. ej. `"1.3.0"`).
-2. Ejecuta `compilar.bat` (el instalador toma la misma versión automáticamente).
-3. En GitHub crea una Release con tag `V1.3.0` (debe coincidir con `APP_VERSION`) y adjunta `dist\YT_Downloader.exe` e `instalador\YT_Downloader_Setup.exe` con esos nombres.
+**Para publicar una versión nueva (automático, con GitHub Actions):**
+1. Sube `APP_VERSION` en `models/config.py` (p. ej. `"1.5.1"`) y haz commit y push.
+2. Crea y sube el tag: `git tag V1.5.1` y `git push origin V1.5.1` (debe coincidir con `APP_VERSION`).
+3. El workflow **Release** (`.github/workflows/release.yml`) corre las pruebas, compila `YT_Downloader.exe` (versión Completa, con ffmpeg), crea `YT_Downloader_Setup.exe`, calcula sus `.sha256` y crea la Release con los cuatro archivos.
+4. Por defecto la Release queda como **borrador** (`RELEASE_AS_DRAFT` en `release.yml`): descárgala, prueba el instalador y pulsa **Publish release**. Mientras sea borrador, la app de tus usuarios no la ve como actualización. Cambia `RELEASE_AS_DRAFT` a `"false"` cuando quieras que se publique sola.
+
+Para probar la compilación sin publicar nada: pestaña **Actions → Release → Run workflow** sobre una rama. Deja los archivos como artefacto (14 días) y permite elegir la versión Ligera. Si falla algo después de crear el tag, corrige y usa **Re-run jobs**; si la release ya existe, solo reemplaza los archivos.
+
+**A mano (sin Actions):** ejecuta `compilar.bat` y crea la Release en GitHub adjuntando `dist\YT_Downloader.exe`, `instalador\YT_Downloader_Setup.exe` y sus `.sha256`.
 
 ### Descargar playlists
 
