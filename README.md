@@ -1,6 +1,6 @@
 # YT Downloader 🎬
 
-Aplicación de escritorio para Windows que descarga videos y audios de YouTube sin necesidad de abrir un navegador. Soporta videos individuales, playlists completas y conversión a MP3.
+Aplicación de escritorio para Windows que descarga videos y audios de YouTube y de cientos de sitios más sin necesidad de abrir un navegador. Soporta videos individuales, playlists completas y conversión a MP3.
 
 ---
 
@@ -25,7 +25,7 @@ Doble clic en  dependencias.bat
 ```
 Este script:
 - Verifica que Python esté instalado
-- Instala PyQt6, yt-dlp, PyInstaller y psutil vía pip
+- Instala PyQt6, yt-dlp (con curl-cffi, necesario para TikTok), PyInstaller y psutil vía pip
 - Instala `imageio-ffmpeg` (opcional), que trae un ffmpeg listo para MP3 sin tocar el PATH
 
 Solo necesitas hacerlo **una vez** (o cuando actualices dependencias).
@@ -87,6 +87,28 @@ Las descargas se guardan en:
 C:\Users\TU_USUARIO\Descargas_YouTube\
 ```
 
+### Otros sitios además de YouTube
+
+La app usa yt-dlp, así que el campo de URL acepta enlaces de TikTok, Instagram, Facebook, X (Twitter), Vimeo y [cientos de sitios más](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md). El análisis, la vista previa, la cola y las playlists funcionan igual. Algunos sitios piden iniciar sesión: en ese caso usa un `cookies.txt` junto a la app.
+
+**TikTok** necesita el componente `curl-cffi` (permite a yt-dlp identificarse como un navegador). Sin él, el error es `Unexpected response from webpage request`. `dependencias.bat`, `compilar.bat` y `requirements.txt` ya lo instalan, y el `.exe` lo incluye. Si ejecutas con `py main.py` y falla, instálalo con `pip install -U "yt-dlp[default,curl-cffi]"` y reinicia. Si el error persiste, la app reintenta con `cookies.txt` y con las cookies del navegador; prueba también Herramientas → Actualizar yt-dlp.
+
+### Descargar varios enlaces a la vez
+
+**Archivo → Descargar varios enlaces (pegar lista)…** (`Ctrl+L`) abre un cuadro donde pegas los enlaces, **uno por línea**. Debajo se muestra cuántos son válidos. Si prefieres un archivo, el botón **Cargar desde .txt…** del mismo cuadro agrega su contenido. Al pulsar **Agregar a la cola** se descargan con el formato y la calidad elegidos en ese momento.
+
+```
+# Las líneas que empiezan con # se ignoran
+https://www.youtube.com/watch?v=XXXXXXXXXXX
+https://www.tiktok.com/@usuario/video/123
+https://www.youtube.com/playlist?list=PLxxxx
+```
+
+- Si un enlace es una playlist, se agregan sus videos.
+- Se ignoran líneas vacías y enlaces repetidos.
+- Se aplica la misma revisión de duplicados que en una descarga normal.
+- Al terminar, un aviso lista los enlaces que no se pudieron usar y el motivo.
+
 ### Pausar, reanudar y reintentar
 
 Cada descarga tiene su propio botón:
@@ -96,6 +118,8 @@ Cada descarga tiene su propio botón:
 - **↻ Reintentar** aparece si hubo un error.
 - **✕ Quitar de la lista** elimina la tarjeta, pero no borra archivos descargados. Si está descargando, la pausa y la quita al detenerse; el archivo parcial se conserva.
 
+**Todas a la vez:** sobre la lista de descargas hay tres botones: **⏸ Pausar todas** (activas y en espera), **▶ Reanudar todas** (en el orden en que se agregaron, respetando el límite de descargas simultáneas) y **✕ Cancelar todas** (pide confirmación y quita de la lista todo lo que no terminó; no borra archivos).
+
 Si cierras la app con descargas en curso o con un análisis/actualización a medias, se pausan solas y puedes volver a bajarlas después (retoma el archivo parcial).
 
 ### Evitar archivos duplicados
@@ -103,6 +127,12 @@ Si cierras la app con descargas en curso o con un análisis/actualización a med
 Antes de iniciar una descarga, la app revisa los nombres de audio o video del mismo tipo en la carpeta de destino **y en todas sus subcarpetas** (se ignoran las carpetas ocultas o de sistema, como `.git` o `$RECYCLE.BIN`). Así puedes organizar tus descargas en carpetas y no se vuelven a bajar; el aviso muestra la ruta relativa del archivo encontrado. Si ya hay un archivo del mismo tipo con ese nombre base, lo omite aunque la extensión sea distinta. Por ejemplo, `Título.mp3` no bloquea la descarga de `Título.mp4`, pero sí evita otra descarga de audio llamada `Título`. La comparación no distingue mayúsculas y **ignora etiquetas de relleno** entre paréntesis o corchetes, o al final del título: `Official Video`, `Official Audio`, `Video Oficial`, `Lyrics`, `Letra`, `Visualizer`, `HD`, `4K`... Así `Artista - Canción (Official Video)` y `Artista - Canción (Official Audio)` cuentan como la misma canción. Cualquier otra etiqueta se conserva y hace que sea otra versión: `(Remix)`, `(Live)`, `(Acoustic)`, `(feat. X)`. El artista que venga en el título también cuenta, por lo que `Artista A - Canción` y `Artista B - Canción` no se confunden. Las palabras ignoradas están en `_NOISE_WORDS` de `models/downloads.py`. La revisión se hace en segundo plano, sin congelar la ventana. También evita poner en cola dos descargas del mismo tipo que producirían el mismo nombre.
 
 M4A y Opus se descargan sin conversión y no necesitan ffmpeg. Opus se guarda en su contenedor WebM. MP3 requiere ffmpeg; si no está disponible, la app conserva el audio original sin conversión. Cada tarjeta muestra el formato descargado.
+
+Cada tarjeta también muestra la velocidad y el **tiempo restante** (p. ej. `2.3 MB/s · 0:45 restante`). En MP4 con video y audio por separado, el tiempo restante corresponde al archivo que se está bajando en ese momento.
+
+### Carátula y metadatos en MP3
+
+Con ffmpeg disponible, los MP3 se guardan con el **título**, el **artista** (el del video o, si no existe, el canal), la fecha y la **miniatura como carátula**. Se puede desactivar en **Ajustes → Incrustar carátula y metadatos en MP3**. M4A, Opus y MP4 no se modifican.
 
 ### Menú Herramientas → Actualizar yt-dlp
 
@@ -137,6 +167,7 @@ Para probar la compilación sin publicar nada: pestaña **Actions → Release �
 ### Descargar playlists
 
 Cuando pegas una URL de playlist, la app carga hasta 1000 videos y los muestra de 200 en 200 (botón **Mostrar más**) con checkboxes; indica cuántos hay en total. Puedes:
+- Ver la **miniatura de cada video** junto a su título (se cargan en segundo plano después de analizar)
 - Seleccionar / deseleccionar videos individualmente
 - Usar los botones **Todos** (incluye los aún no mostrados), **Ninguno** o **Invertir**
 - Controlar cuántos videos se descargan a la vez (1–5) para no saturar la conexión
@@ -147,8 +178,8 @@ Cuando pegas una URL de playlist, la app carga hasta 1000 videos y los muestra d
 
 | Menú | Contenido |
 |------|-----------|
-| **Archivo** | Cambiar carpeta de descarga, abrir la carpeta, salir |
-| **Ajustes** | Opciones de descarga: calidad MP3, descargas a la vez, límite de velocidad y omitir ffmpeg |
+| **Archivo** | Descargar lista desde .txt, cambiar carpeta de descarga, abrir la carpeta, salir |
+| **Ajustes** | Opciones de descarga: calidad MP3, descargas a la vez, límite de velocidad, carátula y metadatos, y omitir ffmpeg |
 | **Herramientas** | Actualizar yt-dlp y buscar actualización de la app |
 | **Ayuda** | Versiones en GitHub, reportar un problema y acerca de |
 
@@ -163,6 +194,7 @@ En la pantalla principal quedan la URL, el formato (MP4, MP3, M4A, Opus), la cal
 | **Calidad MP3** | Seleccionable a 128, 192 o 320 kbps; requiere ffmpeg |
 | **M4A — Audio original** | Descarga directa, sin ffmpeg ni recodificación |
 | **Opus (WebM)** | Descarga directa de audio Opus en contenedor WebM, sin ffmpeg |
+| **Incrustar carátula y metadatos** | Activado por defecto. Solo MP3 convertido con ffmpeg: guarda título, artista, fecha y miniatura dentro del archivo |
 | **Carpeta de destino** | Elige dónde guardar las descargas |
 | **Evitar duplicados** | Omite títulos existentes del mismo tipo: audio con audio y video con video |
 | **Límite de velocidad** | Sin límite o un máximo en KB/s por descarga |
@@ -170,7 +202,7 @@ En la pantalla principal quedan la URL, el formato (MP4, MP3, M4A, Opus), la cal
 | **Pausa / Reanudar** | Botón en cada descarga; retoma desde donde quedó |
 | **Quitar de la lista** | Elimina la tarjeta sin borrar el archivo descargado |
 | **Descargas a la vez** | Cuántos videos de la playlist se descargan en paralelo (1–5, default: 2) |
-| **Cookies del navegador** | Desactivado por defecto. Si lo activas (con confirmación), cuando YouTube pide verificar que no eres un robot la app lee la sesión de Firefox, Edge, Chrome o Brave. Alternativa sin tocar el navegador: `cookies.txt` junto a la app |
+| **Cookies del navegador** | Activado por defecto (se puede desactivar en Ajustes; al volver a activarlo pide confirmación). Solo se usan cuando YouTube pide verificar que no eres un robot la app lee la sesión de Firefox, Edge, Chrome o Brave. Alternativa sin tocar el navegador: `cookies.txt` junto a la app |
 
 La carpeta, formato, calidades, velocidad máxima y cantidad de descargas simultáneas se guardan para la próxima sesión. La calidad MP3 solo afecta a MP3 convertido; M4A y Opus conservan el audio original.
 
