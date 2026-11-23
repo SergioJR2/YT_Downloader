@@ -38,3 +38,18 @@ def test_existing_names_walks_subfolders_and_ignores_hidden(tmp_path):
     assert key("Oculto") not in found
     assert key("Parcial") not in found
     assert key("Video") not in found          # un mp4 no cuenta como audio
+
+
+def test_parse_url_list_ignores_comments_blanks_and_duplicates():
+    from models.downloads import parse_url_list
+    text = "\ufeff# mi lista\nhttps://a.com/1\n\n  https://a.com/2  \nhttps://a.com/1\nHTTP://b.com/3\n"
+    urls, invalid = parse_url_list(text)
+    assert urls == ["https://a.com/1", "https://a.com/2", "HTTP://b.com/3"]
+    assert invalid == []
+
+
+def test_parse_url_list_reports_lines_that_are_not_links():
+    from models.downloads import parse_url_list
+    urls, invalid = parse_url_list("https://a.com/1\nuna canción\nwww.sinesquema.com\n")
+    assert urls == ["https://a.com/1"]
+    assert invalid == ["una canción", "www.sinesquema.com"]

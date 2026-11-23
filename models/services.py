@@ -23,6 +23,7 @@ from .errors import (
     _raw_err,
     is_bot_error,
     is_unavailable_error,
+    is_webpage_blocked_error,
 )
 from .runtime import _activate_updated_libs, find_js_runtimes
 
@@ -71,9 +72,14 @@ def run_with_auth_fallback(opts, action, allow_browser_cookies=False):
     def should_try(kind, err):
         if err is None:
             return True
-        if kind in ('clients', 'cookiefile'):
+        if kind == 'clients':
             return is_unavailable_error(err) or is_bot_error(err)
-        return is_bot_error(err) or 'cookie' in _raw_err(err).lower()   # browser
+        if kind == 'cookiefile':
+            return (is_unavailable_error(err) or is_bot_error(err)
+                    or is_webpage_blocked_error(err))
+        # browser
+        return (is_bot_error(err) or is_webpage_blocked_error(err)
+                or 'cookie' in _raw_err(err).lower())
 
     first = last = None
     for kind, o in steps:
@@ -87,7 +93,8 @@ def run_with_auth_fallback(opts, action, allow_browser_cookies=False):
                 raise
             if first is None:
                 first = e
-                if not (is_unavailable_error(e) or is_bot_error(e)):
+                if not (is_unavailable_error(e) or is_bot_error(e)
+                        or is_webpage_blocked_error(e)):
                     raise                     # error real (red, URL...): no insistir
             last = e
     raise first
