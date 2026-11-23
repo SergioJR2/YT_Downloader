@@ -1,6 +1,6 @@
 """Widgets reutilizables para playlists y elementos de descarga."""
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -28,11 +28,14 @@ from .theme import (
 class PlaylistRow(QWidget):
     toggled = pyqtSignal()
 
-    def __init__(self, index, title, duration, url, parent=None):
+    THUMB_W, THUMB_H = 80, 45
+
+    def __init__(self, index, title, duration, url, thumb_url='', parent=None):
         super().__init__(parent)
         self.url        = url
         self.title_full = title
-        self.setFixedHeight(38)
+        self.thumb_url  = thumb_url
+        self.setFixedHeight(56)
         self.setStyleSheet("background: transparent;")
 
         layout = QHBoxLayout(self)
@@ -64,6 +67,12 @@ class PlaylistRow(QWidget):
         num.setStyleSheet(f"color: {C_MUTED};")
         num.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
+        self.thumb = QLabel("🎬")
+        self.thumb.setFixedSize(self.THUMB_W, self.THUMB_H)
+        self.thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumb.setStyleSheet(
+            f"background: {C_SURF3}; color: {C_MUTED}; border-radius: 5px; border: none;")
+
         short = title if len(title) <= 65 else title[:63] + "…"
         self.lbl = QLabel(short)
         self.lbl.setFont(QFont("Segoe UI", 9))
@@ -78,6 +87,7 @@ class PlaylistRow(QWidget):
 
         layout.addWidget(self.chk)
         layout.addWidget(num)
+        layout.addWidget(self.thumb)
         layout.addWidget(self.lbl, 1)
         layout.addWidget(dur_lbl)
 
@@ -85,6 +95,15 @@ class PlaylistRow(QWidget):
         checked = self.chk.isChecked()
         self.lbl.setStyleSheet(f"color: {'#f0f0f8' if checked else C_MUTED};")
         self.toggled.emit()
+
+    def set_thumb(self, pix):
+        """Pone la miniatura, recortada al centro para llenar el recuadro."""
+        w, h = self.THUMB_W, self.THUMB_H
+        pix = pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                         Qt.TransformationMode.SmoothTransformation)
+        pix = pix.copy((pix.width() - w) // 2, (pix.height() - h) // 2, w, h)
+        self.thumb.setText("")
+        self.thumb.setPixmap(pix)
 
     def is_checked(self):     return self.chk.isChecked()
     def set_checked(self, v): self.chk.setChecked(v)
