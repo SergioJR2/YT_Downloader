@@ -10,6 +10,7 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QNetworkAccessManager
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QMainWindow,
     QMessageBox,
@@ -20,8 +21,9 @@ from PyQt6.QtWidgets import (
 )
 
 from .appupdate import RELEASES_URL, apply_update
+from .batch_dialog import UrlListDialog
 from .config import APP_VERSION, DEFAULT_CONCURRENT, DOWNLOAD_DIR
-from .downloads import download_name_key
+from .downloads import download_name_key, parse_url_list
 from .runtime import find_ffmpeg, find_js_runtimes, kill_child_processes
 from .services import ytdlp_version
 from .theme import C_BG, C_BORDER
@@ -32,6 +34,7 @@ from .view import WindowViewMixin
 from .workers import (
     AppDownloadThread,
     AppUpdateCheckThread,
+    BatchThread,
     FetchThread,
     ScanThread,
     UpdateThread,
@@ -65,9 +68,12 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self.audio_quality = self.settings.value("audio_quality", 192, type=int)
         if self.audio_quality not in (128, 192, 320):
             self.audio_quality = 192
-        # Leer cookies del navegador es opt-in: por defecto la app no toca esos datos.
+        # Cookies del navegador: activadas por defecto (solo se leen si YouTube pide
+        # verificación; se pueden desactivar en Ajustes).
         self.use_browser_cookies = self.settings.value(
-            "use_browser_cookies", False, type=bool)
+            "use_browser_cookies", True, type=bool)
+        # Incrustar carátula y metadatos (título, artista...) en los MP3
+        self.embed_meta = self.settings.value("embed_meta", True, type=bool)
         self._ffmpeg_available = bool(find_ffmpeg())
         self.use_ffmpeg = self.settings.value(
             "use_ffmpeg", self._ffmpeg_available, type=bool) and self._ffmpeg_available
@@ -84,10 +90,17 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self.speed_limit = max(0, min(102400, self.speed_limit))
         self._scan_thread       = None            # revisión de duplicados en curso
         self._pending_start     = None            # datos de la descarga que espera el escaneo
+        self._batch_thread      = None            # lectura de una lista de enlaces
+        self._batch_dlg         = None
+        self._batch_invalid     = []
 
         # Un solo QNetworkAccessManager reutilizable para thumbnails
         self._net_mgr = QNetworkAccessManager(self)
         self._net_mgr.finished.connect(self._on_thumb)
+        # Otro para las miniaturas de las filas de una playlist
+        self._row_net = QNetworkAccessManager(self)
+        self._row_net.finished.connect(self._on_row_thumb)
+        self._row_replies = {}
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -389,6 +402,10 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self.use_browser_cookies = bool(enabled)
         self.settings.setValue("use_browser_cookies", self.use_browser_cookies)
 
+    def _on_embed_meta_change(self, enabled):
+        self.embed_meta = enabled
+        self.settings.setValue("embed_meta", enabled)
+
     def _on_ffmpeg_mode_change(self, omit_ffmpeg):
         self.use_ffmpeg = self._ffmpeg_available and not omit_ffmpeg
         self.settings.setValue("use_ffmpeg", self.use_ffmpeg)
@@ -410,8 +427,7 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self.lbl_output_dir.setToolTip(folder)
 
     def start_download(self):
-        """Prepara la descarga y revisa duplicados en un hilo aparte; el resto
-        continúa en _on_scan_done."""
+        """Prepara la descarga del video o la selección de playlist analizada."""
         if not self.current_info: return
         if self._scan_thread is not None and self._scan_thread.isRunning():
             return
@@ -421,7 +437,15 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         else:
             # Usa la URL que se ANALIZÓ, no lo que haya en la caja ahora mismo
             items = [(self.current_info['title'], self.current_info.get('url') or url)]
-        if not items: return
+        self._queue_items(items)
+
+    def _queue_items(self, items):
+        """Revisa duplicados en un hilo aparte con los ajustes de AHORA; el resto
+        continúa en _on_scan_done. Lo usan la descarga normal y la de lista .txt.
+        Devuelve False si no pudo empezar (no hay nada o hay otra revisión en curso)."""
+        if not items: return False
+        if self._scan_thread is not None and self._scan_thread.isRunning():
+            return False
 
         fmt = self.selected_fmt
         q = str(self.audio_quality) if fmt == 'mp3' else self.selected_quality
@@ -439,7 +463,7 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         self._pending_start = {
             'items': items, 'fmt': fmt, 'q': q, 'tag': tag,
             'media_kind': media_kind, 'use_ffmpeg': use_ffmpeg,
-            'output_dir': self.output_dir,
+            'output_dir': self.output_dir, 'embed_meta': self.embed_meta,
         }
         self.btn_dl_single.setEnabled(False)
         self.btn_dl_pl.setEnabled(False)
@@ -448,6 +472,64 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         th.failed.connect(self._on_scan_failed)
         self._scan_thread = th
         th.start()
+        return True
+
+    # ─── Descarga desde una lista de enlaces (.txt) ───────────────────────
+
+    def load_url_list(self):
+        """Archivo → Descargar varios enlaces: abre un cuadro donde pegar la lista."""
+        if self._batch_thread is not None and self._batch_thread.isRunning():
+            return
+        dlg = UrlListDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        urls, invalid = parse_url_list(dlg.text())
+        if not urls:
+            return
+        self._batch_invalid = invalid
+
+        dlg = QProgressDialog(f"Leyendo {len(urls)} enlaces…", "Cancelar", 0, len(urls), self)
+        dlg.setWindowTitle("Lista de enlaces")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        self._batch_dlg = dlg
+        th = BatchThread(urls, allow_browser_cookies=self.use_browser_cookies)
+        th.progress.connect(self._on_batch_progress)
+        th.done.connect(self._on_batch_done)
+        dlg.canceled.connect(th.cancel)
+        self._batch_thread = th
+        th.start()
+
+    def _on_batch_progress(self, done, total):
+        if self._batch_dlg is not None:
+            self._batch_dlg.setValue(done)
+            self._batch_dlg.setLabelText(f"Leyendo enlaces… {done} de {total}")
+
+    def _on_batch_done(self, items, errors):
+        th, self._batch_thread = self._batch_thread, None
+        if th is not None:
+            self.manager.retire_thread(th)
+        dlg, self._batch_dlg = self._batch_dlg, None
+        if dlg is not None:
+            dlg.canceled.disconnect()
+            dlg.close()
+        if self.manager.closing:
+            return
+        problems = [f"• {u}  (no es un enlace válido)" for u in self._batch_invalid]
+        problems += [f"• {u}\n   {msg.splitlines()[0] if msg else 'Error'}" for u, msg in errors]
+        started = self._queue_items(items) if items else False
+        if items and not started:
+            QMessageBox.information(
+                self, "Lista de enlaces",
+                "Todavía se está revisando la carpeta. Vuelve a cargar la lista en unos segundos.")
+            return
+        if problems:
+            more = f"\n… y {len(problems) - 8} más" if len(problems) > 8 else ""
+            QMessageBox.warning(
+                self, "Algunos enlaces no se pudieron usar",
+                f"{len(items)} video(s) se enviaron a la cola. Estos no:\n\n"
+                + "\n".join(problems[:8]) + more)
 
     def _finish_scan(self):
         th, self._scan_thread = self._scan_thread, None
@@ -471,6 +553,7 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         items, fmt, q = pending['items'], pending['fmt'], pending['q']
         tag, media_kind = pending['tag'], pending['media_kind']
         use_ffmpeg, output_dir = pending['use_ffmpeg'], pending['output_dir']
+        embed_meta = pending.get('embed_meta', True)
 
         # Nombres de tareas activas, en cola, pausadas o fallidas: dos archivos del
         # mismo tipo con el mismo título no deben colisionar.
@@ -494,7 +577,7 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
                 title=title, url=u, fmt=fmt, quality=q,
                 video_quality=self.selected_quality, audio_quality=self.audio_quality,
                 output_dir=output_dir, speed_limit=self.speed_limit,
-                use_ffmpeg=use_ffmpeg)
+                use_ffmpeg=use_ffmpeg, embed_meta=embed_meta)
             card = DownloadCard(task.id, title, tag)
             card.action_clicked.connect(self.manager.toggle)
             card.remove_clicked.connect(self.manager.remove)
@@ -560,7 +643,33 @@ class MainWindow(WindowMenuMixin, WindowViewMixin, QMainWindow):
         if not self.download_cards:
             self.dl_panel.hide()
 
+    def _pause_all(self):
+        self.manager.pause_all()
+
+    def _resume_all(self):
+        self.manager.resume_all()
+
+    def _cancel_all(self):
+        n = sum(1 for t in self.manager.tasks.values() if t.state is not TaskState.DONE)
+        if not n:
+            return
+        r = QMessageBox.question(
+            self, "Cancelar todas",
+            f"¿Cancelar {n} descarga{'s' if n != 1 else ''} y quitarla"
+            f"{'s' if n != 1 else ''} de la lista?\n\nNo se borran los archivos "
+            "ya descargados (los parciales quedan en la carpeta).")
+        if r == QMessageBox.StandardButton.Yes:
+            self.manager.cancel_all()
+
+    def _update_global_buttons(self):
+        states = [t.state for t in self.manager.tasks.values()]
+        self.btn_pause_all.setEnabled(
+            any(s in (TaskState.RUNNING, TaskState.QUEUED) for s in states))
+        self.btn_resume_all.setEnabled(any(s is TaskState.PAUSED for s in states))
+        self.btn_cancel_all.setEnabled(any(s is not TaskState.DONE for s in states))
+
     def _update_queue_label(self):
+        self._update_global_buttons()
         active = self.manager.active_count
         queued = self.manager.queued_ids()
         if active == 0 and not queued:

@@ -52,6 +52,8 @@ class WindowMenuMixin:
 
         m = bar.addMenu("Archivo")
         m.addAction(act("Cambiar carpeta de descarga…", self._choose_output_dir, "Ctrl+O"))
+        m.addAction(act("Descarga masiva de enlaces…", self.load_url_list, "Ctrl+L",
+                        tip="Pega una lista de enlaces (o cárgala desde un .txt) y envíalos a la cola."))
         m.addAction(act("Abrir carpeta de descargas", self.open_folder, "Ctrl+D"))
         m.addSeparator()
         m.addAction(act("Salir", self.close, "Ctrl+Q"))
@@ -151,6 +153,15 @@ class WindowMenuMixin:
         form.addRow("Límite de velocidad",
                     field(self.spin_speed, "0 = sin límite. El valor se aplica a cada descarga."))
 
+        # Carátula y metadatos
+        self.chk_embed_meta = QCheckBox("Incrustar carátula y metadatos en MP3")
+        self.chk_embed_meta.setChecked(self.embed_meta)
+        self.chk_embed_meta.toggled.connect(self._on_embed_meta_change)
+        form.addRow("Etiquetas", field(
+            self.chk_embed_meta,
+            "Guarda título, artista (o canal), fecha y la miniatura como carátula. "
+            "Requiere ffmpeg; M4A y Opus no se modifican."))
+
         # ffmpeg
         self.chk_no_ffmpeg = QCheckBox("Omitir ffmpeg")
         self.chk_no_ffmpeg.setChecked(not self.use_ffmpeg)
@@ -168,7 +179,7 @@ class WindowMenuMixin:
         self.chk_browser_cookies.toggled.connect(self._on_browser_cookies_change)
         form.addRow("Cookies", field(
             self.chk_browser_cookies,
-            "Desactivado por defecto. Solo se usa cuando YouTube pide verificación; lee la "
+            "Activado por defecto. Solo se usa cuando YouTube pide verificación; lee la "
             "sesión de Firefox, Edge, Chrome o Brave. Alternativa: cookies.txt junto a la app."))
 
         root.addLayout(form)
