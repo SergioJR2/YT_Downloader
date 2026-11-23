@@ -44,6 +44,15 @@ def clean_err(e):
                 'descargas en Windows Defender.')
     elif 'private video' in low:
         msg += '\n→ El video es privado: solo su dueño puede descargarlo.'
+    elif is_webpage_blocked_error(e):
+        if not has_impersonation():
+            msg += ('\n→ TikTok exige que la app se identifique como un navegador y falta '
+                    'el componente curl-cffi. Con «py main.py»: ejecuta dependencias.bat (o '
+                    'pip install -U "yt-dlp[default,curl-cffi]") y reinicia. El .exe nuevo ya lo incluye.')
+        else:
+            msg += ('\n→ El sitio bloqueó la petición. Prueba: Herramientas → Actualizar yt-dlp, '
+                    'volver a intentar más tarde, o colocar un cookies.txt (con tu sesión de ese '
+                    'sitio) junto a la aplicación.')
     elif is_bot_error(e):
         msg += ('\n→ YouTube pide verificar que no eres un robot. Opciones: coloca un '
                 'cookies.txt junto a la aplicación, o activa «Usar cookies del navegador» '
@@ -73,6 +82,25 @@ def is_bot_error(e):
     subcadena suelta y un ID de video o una URL podían dar falsos positivos."""
     m = _raw_err(e).lower()
     return any(h in m for h in _BOT_HINTS)
+
+_BLOCKED_HINTS = ('unexpected response from webpage', 'unable to extract webpage video data')
+
+
+def is_webpage_blocked_error(e):
+    """TikTok (y otros) devuelven una página que no es el video cuando bloquean la
+    petición o no se la identifica como navegador."""
+    m = _raw_err(e).lower()
+    return any(h in m for h in _BLOCKED_HINTS)
+
+
+def has_impersonation():
+    """True si curl_cffi está disponible (yt-dlp puede imitar un navegador)."""
+    try:
+        import curl_cffi  # noqa: F401
+        return True
+    except Exception:
+        return False
+
 
 def is_unavailable_error(e):
     m = _raw_err(e).lower()
