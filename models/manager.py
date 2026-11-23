@@ -44,6 +44,7 @@ class DownloadTask:
     output_dir: str
     speed_limit: int
     use_ffmpeg: bool
+    embed_meta: bool = True   # incrustar carátula y metadatos (solo MP3 con ffmpeg)
     state: TaskState = TaskState.QUEUED
 
     @property
@@ -55,7 +56,7 @@ def _make_thread(task, allow_browser_cookies):
     return DownloadThread(
         task.id, task.url, task.fmt, task.video_quality, task.output_dir,
         task.audio_quality, task.speed_limit, task.use_ffmpeg,
-        allow_browser_cookies=allow_browser_cookies)
+        allow_browser_cookies=allow_browser_cookies, embed_meta=task.embed_meta)
 
 
 class DownloadManager(QObject):
@@ -130,14 +131,15 @@ class DownloadManager(QObject):
     # ── Alta y control ───────────────────────────────────────────────────
 
     def add_task(self, title, url, fmt, quality, video_quality, audio_quality,
-                 output_dir, speed_limit, use_ffmpeg):
+                 output_dir, speed_limit, use_ffmpeg, embed_meta=True):
         """Crea la tarea y la deja en cola. Después hay que llamar a pump()."""
         self._seq += 1
         task = DownloadTask(
             id=f"{re.sub(r'[^a-zA-Z0-9]', '_', url)[:30]}_{fmt}_{quality}_{self._seq}",
             title=title, url=url, fmt=fmt, quality=quality,
             video_quality=video_quality, audio_quality=audio_quality,
-            output_dir=output_dir, speed_limit=speed_limit, use_ffmpeg=use_ffmpeg)
+            output_dir=output_dir, speed_limit=speed_limit, use_ffmpeg=use_ffmpeg,
+            embed_meta=embed_meta)
         self.tasks[task.id] = task
         self._queue.append(task.id)
         return task
@@ -171,6 +173,32 @@ class DownloadManager(QObject):
         if task.state is TaskState.QUEUED:
             self._queue.remove(task_id)
         self._discard(task_id)
+        self.pump()
+
+    def pause_all(self):
+        """Pausa todas las descargas activas y las que esperan en la cola."""
+        for task in list(self.tasks.values()):
+            if task.state in (TaskState.RUNNING, TaskState.QUEUED):
+                self.toggle(task.id)
+
+    def resume_all(self):
+        """Reanuda todas las pausadas, en el orden en que se crearon."""
+        for task in list(self.tasks.values()):
+            if task.state is TaskState.PAUSED:
+                self._queue.append(task.id)
+                self._set(task, TaskState.QUEUED)
+        self.pump()
+
+    def cancel_all(self):
+        """Quita de la lista todo lo que no terminó (nunca borra archivos). Las
+        activas se detienen primero y se quitan al parar su hilo."""
+        ids = [t.id for t in self.tasks.values() if t.state is not TaskState.DONE]
+        self._queue.clear()          # que no arranque nada nuevo mientras se quita
+        for task_id in ids:
+            if task_id in self._threads:
+                self.remove(task_id)
+            else:
+                self._discard(task_id)
         self.pump()
 
     def pump(self):

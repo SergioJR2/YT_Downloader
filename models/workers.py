@@ -29,6 +29,21 @@ from .services import (
     run_with_auth_fallback,
 )
 
+def entry_thumbnail(entry):
+    """URL de una miniatura pequeña para una entrada de playlist (o '')."""
+    thumbs = [t for t in (entry.get('thumbnails') or []) if t.get('url')]
+    if thumbs:
+        # La más cercana a ~250 px de ancho: se ve bien en la fila y pesa poco.
+        return min(thumbs, key=lambda t: abs((t.get('width') or 250) - 250))['url']
+    if entry.get('thumbnail'):
+        return entry['thumbnail']
+    url = entry.get('url') or ''
+    if entry.get('id') and ('youtube' in (entry.get('ie_key') or '').lower()
+                            or 'youtu' in url):
+        return f"https://i.ytimg.com/vi/{entry['id']}/mqdefault.jpg"
+    return ''
+
+
 class UpdateThread(QThread):
     done = pyqtSignal(bool, str, bool)   # ok, mensaje, requiere_reinicio
 
@@ -43,11 +58,11 @@ class UpdateThread(QThread):
                 self.done.emit(True, msg + "\n" + js_msg + "\n" + ffmpeg_msg,
                                changed or js_changed)
                 return
-            pkgs   = ['yt-dlp', 'yt-dlp-ejs', 'imageio-ffmpeg']
+            pkgs   = ['yt-dlp', 'yt-dlp-ejs', 'imageio-ffmpeg', 'curl-cffi']
             before = {p: _pkg_version(p) for p in pkgs}
             flags  = 0x08000000 if platform.system() == 'Windows' else 0  # sin ventana
             base   = [sys.executable, '-m', 'pip', 'install', '-U', '--quiet']
-            r = subprocess.run(base + ['yt-dlp[default]', 'imageio-ffmpeg'],
+            r = subprocess.run(base + ['yt-dlp[default,curl-cffi]', 'imageio-ffmpeg'],
                                capture_output=True, text=True,
                                timeout=300, creationflags=flags)
             if r.returncode != 0:   # imageio-ffmpeg es opcional: reintenta sin él
@@ -163,6 +178,7 @@ class FetchThread(QThread):
                             'title':    e.get('title') or 'Sin título',
                             'url':      e.get('url') or f"https://youtube.com/watch?v={e.get('id')}",
                             'duration': e.get('duration') or 0,
+                            'thumbnail': entry_thumbnail(e),
                         }
                         for e in entries[:PLAYLIST_MAX]
                     ]
@@ -188,13 +204,56 @@ class FetchThread(QThread):
         except Exception as e:
             self.error.emit(clean_err(e))
 
+class BatchThread(QThread):
+    """Resuelve el título de cada enlace de una lista (y expande las playlists)
+    para poder encolarlos igual que una descarga normal."""
+    progress = pyqtSignal(int, int)        # enlaces revisados, total
+    done = pyqtSignal(list, list)          # [(título, url)], [(url, error)]
+
+    def __init__(self, urls, allow_browser_cookies=False):
+        super().__init__()
+        self.urls = urls
+        self.allow_browser_cookies = allow_browser_cookies
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def run(self):
+        items, errors, seen = [], [], set()
+        opts = {'quiet': True, 'no_warnings': True, 'no_color': True,
+                'extract_flat': 'in_playlist', **get_cookie_option()}
+        for n, url in enumerate(self.urls, 1):
+            if self._cancel:
+                break
+            try:
+                info = run_with_auth_fallback(
+                    opts, lambda ydl, u=url: ydl.extract_info(u, download=False),
+                    allow_browser_cookies=self.allow_browser_cookies)
+                if info.get('_type') == 'playlist':
+                    for e in (info.get('entries') or [])[:PLAYLIST_MAX]:
+                        if not e or (e.get('title') or '') in ('[Private video]', '[Deleted video]'):
+                            continue
+                        u = e.get('url') or (f"https://youtube.com/watch?v={e['id']}"
+                                             if e.get('id') else None)
+                        if u and u not in seen:
+                            seen.add(u)
+                            items.append((e.get('title') or 'Sin título', u))
+                elif url not in seen:
+                    seen.add(url)
+                    items.append((info.get('title') or 'Sin título', url))
+            except Exception as e:
+                errors.append((url, clean_err(e)))
+            self.progress.emit(n, len(self.urls))
+        self.done.emit(items, errors)
+
 class DownloadThread(QThread):
     progress = pyqtSignal(str, float, str, str)
     # No se llama "finished" para no tapar la señal nativa QThread.finished.
     task_finished = pyqtSignal(str, bool, str)
 
     def __init__(self, task_id, url, fmt, quality, output_dir, audio_quality, speed_limit,
-                 use_ffmpeg=True, allow_browser_cookies=False):
+                 use_ffmpeg=True, allow_browser_cookies=False, embed_meta=True):
         super().__init__()
         self.task_id = task_id
         self.url     = url
@@ -205,6 +264,7 @@ class DownloadThread(QThread):
         self.speed_limit = speed_limit
         self.use_ffmpeg = use_ffmpeg
         self.allow_browser_cookies = allow_browser_cookies
+        self.embed_meta = embed_meta
         self._pause  = False
         self._streams_done = 0     # archivos (video, audio...) ya descargados por completo
         self._streams_total = 1    # archivos que bajará yt-dlp para esta tarea
@@ -227,7 +287,8 @@ class DownloadThread(QThread):
             # cuando termina el video y empieza el audio. El total estimado puede
             # quedarse corto; el 100% se reserva para cuando yt-dlp confirme el final.
             pct = min((self._streams_done + frac) / n * 100, 99)
-            self.progress.emit(self.task_id, pct, self._fmt_speed(speed), 'downloading')
+            self.progress.emit(self.task_id, pct,
+                               self._fmt_speed(speed, d.get('eta')), 'downloading')
         elif d['status'] == 'finished':
             self._streams_done += 1
             if self._streams_done >= n:
@@ -253,11 +314,23 @@ class DownloadThread(QThread):
         return ydl.download([self.url])
 
     @staticmethod
-    def _fmt_speed(s):
+    def _fmt_eta(seconds):
+        m, sec = divmod(int(seconds), 60)
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+    @staticmethod
+    def _fmt_speed(s, eta=None):
+        """Texto de velocidad; si se conoce el tiempo restante se añade al final.
+        (El ETA es del archivo que se está bajando: en MP4 con video y audio por
+        separado se reinicia al empezar el segundo.)"""
         if not s: return ''
-        if s > 1024**2: return f"{s/1024**2:.1f} MB/s"
-        if s > 1024:    return f"{s/1024:.1f} KB/s"
-        return f"{s:.0f} B/s"
+        if s > 1024**2: text = f"{s/1024**2:.1f} MB/s"
+        elif s > 1024:  text = f"{s/1024:.1f} KB/s"
+        else:           text = f"{s:.0f} B/s"
+        if eta is not None and eta >= 0:
+            text += f"  ·  {DownloadThread._fmt_eta(eta)} restante"
+        return text
 
     def run(self):
         try:
@@ -308,6 +381,17 @@ class DownloadThread(QThread):
                             'preferredquality': str(self.audio_quality)
                         }],
                     })
+                    if self.embed_meta:
+                        # Título, artista (si no hay, el canal), fecha y carátula
+                        # dentro del MP3. La miniatura se convierte a JPG porque
+                        # YouTube la entrega en WebP, que MP3 no admite.
+                        base['writethumbnail'] = True
+                        base['postprocessors'] += [
+                            {'key': 'FFmpegThumbnailsConvertor',
+                             'format': 'jpg', 'when': 'before_dl'},
+                            {'key': 'FFmpegMetadata', 'add_metadata': True},
+                            {'key': 'EmbedThumbnail'},
+                        ]
                 else:
                     # Sin ffmpeg: se descarga el audio original (m4a, suena
                     # en cualquier reproductor) sin ningún post-procesado

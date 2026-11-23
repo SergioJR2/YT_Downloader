@@ -152,3 +152,56 @@ def test_factory_failure_becomes_error():
     t = mgr.add_task("a", "u", "mp4", "best", "best", 192, "/tmp", 0, True)
     mgr.pump()
     assert t.state is TaskState.ERROR and not mgr.has_pending()
+
+
+def test_pause_all_pauses_running_and_queued_and_starts_nothing(env):
+    mgr, threads, add, *_ = env
+    for name in "abcd":
+        add(name)
+    mgr.pump()
+    mgr.pause_all()
+    assert states(mgr) == [TaskState.PAUSING, TaskState.PAUSING,
+                           TaskState.PAUSED, TaskState.PAUSED]
+    assert all(t.pause_requested for t in threads)
+    for t in list(threads):
+        t.finish(False, PAUSED_MSG)
+    assert states(mgr) == [TaskState.PAUSED] * 4
+    assert len(threads) == 2            # al parar los activos no arrancó ninguno nuevo
+
+
+def test_resume_all_requeues_in_creation_order(env):
+    mgr, threads, add, *_ = env
+    a, b, c = add("a"), add("b"), add("c")
+    mgr.pump()
+    mgr.pause_all()
+    for t in list(threads):
+        t.finish(False, PAUSED_MSG)
+    mgr.resume_all()
+    assert states(mgr) == [TaskState.RUNNING, TaskState.RUNNING, TaskState.QUEUED]
+    assert mgr.queued_ids() == [c.id]
+
+
+def test_resume_all_ignores_errors_and_done(env):
+    mgr, threads, add, *_ = env
+    a, b = add("a"), add("b")
+    mgr.pump()
+    threads[0].finish(True)
+    threads[1].finish(False, "falló")
+    mgr.resume_all()
+    assert states(mgr) == [TaskState.DONE, TaskState.ERROR]
+
+
+def test_cancel_all_removes_everything_unfinished(env):
+    mgr, threads, add, events, removed = env
+    a, b, c, d = add("a"), add("b"), add("c"), add("d")
+    mgr.pump()
+    threads[0].finish(True)             # a termina: c ocupa su hueco, d sigue en cola
+    assert states(mgr) == [TaskState.DONE, TaskState.RUNNING,
+                           TaskState.RUNNING, TaskState.QUEUED]
+    mgr.cancel_all()
+    assert removed == [d.id]                     # la que esperaba se quita al instante
+    assert all(t.pause_requested for t in threads[1:3])
+    for t in threads[1:3]:
+        t.finish(False, PAUSED_MSG)              # las activas se quitan al parar
+    assert list(mgr.tasks) == [a.id]             # solo queda la terminada
+    assert len(threads) == 3                     # no arrancó nada nuevo

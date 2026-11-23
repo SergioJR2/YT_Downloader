@@ -21,6 +21,13 @@ yt_datas, yt_bins, yt_hidden = collect_all('yt_dlp')
 # Solver JavaScript de YouTube (imprescindible desde yt-dlp 2025.11)
 ej_datas, ej_bins, ej_hidden = collect_all('yt_dlp_ejs')
 psutil_datas, psutil_bins, psutil_hidden = collect_all('psutil')
+# curl_cffi: permite a yt-dlp "imitar" un navegador (TikTok lo exige; sin él
+# responde "Unexpected response from webpage request").
+cc_datas, cc_bins, cc_hidden = [], [], []
+try:
+    cc_datas, cc_bins, cc_hidden = collect_all('curl_cffi')
+except Exception:
+    print('AVISO: curl-cffi no esta instalado; TikTok no funcionara en este .exe.')
 excludes = ['tkinter', 'matplotlib', 'numpy', 'flask', 'scipy']
 
 # ffmpeg: solo en la version "Completa" (binario de imageio-ffmpeg)
@@ -38,13 +45,14 @@ else:
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[*yt_bins, *ej_bins, *psutil_bins, *io_bins],
-    datas=[*yt_datas, *ej_datas, *psutil_datas, *io_datas],
+    binaries=[*yt_bins, *ej_bins, *psutil_bins, *io_bins, *cc_bins],
+    datas=[*yt_datas, *ej_datas, *psutil_datas, *io_datas, *cc_datas],
     hiddenimports=[
         *yt_hidden,
         *ej_hidden,
         *psutil_hidden,
         *io_hidden,
+        *cc_hidden,
         'PyQt6.QtNetwork',
         'PyQt6.sip',
     ],

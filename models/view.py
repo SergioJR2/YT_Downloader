@@ -1,7 +1,8 @@
 """Construcción y representación visual de la ventana principal."""
 from PyQt6.QtCore import QPoint, Qt, QUrl
 from PyQt6.QtGui import QBrush, QColor, QFont, QIcon, QImage, QPainter, QPalette, QPixmap, QPolygon
-from PyQt6.QtNetwork import QNetworkRequest
+from PyQt6 import sip
+from PyQt6.QtNetwork import QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -89,10 +90,10 @@ class WindowViewMixin:
 
     def _build_url_card(self):
         card = self._card(); lay = card.layout()
-        self._sec_lbl(lay, "URL DE YOUTUBE")
+        self._sec_lbl(lay, "URL DEL VIDEO")
         row = QHBoxLayout(); row.setSpacing(10)
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://youtube.com/watch?v=...  o  playlist...")
+        self.url_input.setPlaceholderText("Pega el enlace de un video o playlist...")
         self.url_input.setFont(QFont("Consolas", 9))
         self.url_input.setFixedHeight(40)
         self.url_input.setStyleSheet(f"""
@@ -278,6 +279,19 @@ class WindowViewMixin:
         dl_head.addWidget(self._sec_lbl_widget, 1)
         dl_head.addWidget(self.lbl_queue_info)
         lay.addLayout(dl_head)
+        # Controles para todas las descargas a la vez
+        bulk = QHBoxLayout(); bulk.setSpacing(8)
+        self.btn_pause_all = self._btn_sel("⏸  Pausar todas")
+        self.btn_resume_all = self._btn_sel("▶  Reanudar todas")
+        self.btn_cancel_all = self._btn_sel("✕  Cancelar todas")
+        self.btn_pause_all.clicked.connect(self._pause_all)
+        self.btn_resume_all.clicked.connect(self._resume_all)
+        self.btn_cancel_all.clicked.connect(self._cancel_all)
+        for b in (self.btn_pause_all, self.btn_resume_all, self.btn_cancel_all):
+            b.setEnabled(False)
+            bulk.addWidget(b)
+        bulk.addStretch()
+        lay.addLayout(bulk)
         self.dl_list_layout = QVBoxLayout(); self.dl_list_layout.setSpacing(8)
         lay.addLayout(self.dl_list_layout)
         btn_f = self._btn_ghost("📁  Abrir carpeta de descargas")
@@ -302,6 +316,8 @@ class WindowViewMixin:
             self._load_thumb(data['thumbnail'])
 
     def _render_playlist(self, data):
+        for reply in list(self._row_replies):   # miniaturas pendientes de la anterior
+            reply.abort()
         self.playlist_rows.clear()
         while self.pl_rows_layout.count() > 1:
             item = self.pl_rows_layout.takeAt(0)
@@ -315,8 +331,10 @@ class WindowViewMixin:
         """Muestra `amount` videos más de la playlist (se cargan por páginas)."""
         start = len(self.playlist_rows)
         for i, item in enumerate(self._pl_items[start:start + amount], start):
-            row_w = PlaylistRow(i+1, item['title'], item.get('duration', 0), item['url'])
+            row_w = PlaylistRow(i+1, item['title'], item.get('duration', 0), item['url'],
+                                item.get('thumbnail', ''))
             row_w.toggled.connect(self._update_sel_count)
+            self._load_row_thumb(row_w)
             sep = QFrame()
             sep.setFrameShape(QFrame.Shape.HLine)
             sep.setFixedHeight(1)
@@ -378,6 +396,23 @@ class WindowViewMixin:
     def _load_thumb(self, url):
         """Un solo net_mgr reutilizable — sin memory leaks."""
         self._net_mgr.get(QNetworkRequest(QUrl(url)))
+
+    def _load_row_thumb(self, row):
+        """Pide la miniatura de una fila de playlist (en segundo plano)."""
+        if row.thumb_url:
+            reply = self._row_net.get(QNetworkRequest(QUrl(row.thumb_url)))
+            self._row_replies[reply] = row
+
+    def _on_row_thumb(self, reply):
+        row = self._row_replies.pop(reply, None)
+        try:
+            if (row is not None and not sip.isdeleted(row)
+                    and reply.error() == QNetworkReply.NetworkError.NoError):
+                pix = QPixmap()
+                if pix.loadFromData(bytes(reply.readAll())):
+                    row.set_thumb(pix)
+        finally:
+            reply.deleteLater()
 
     def _on_thumb(self, reply):
         pix = QPixmap(); pix.loadFromData(bytes(reply.readAll()))

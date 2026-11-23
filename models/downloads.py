@@ -119,3 +119,23 @@ def existing_download_names(folder, media_kind):
                 shown = name if rel_dir == '.' else os.path.join(rel_dir, name)
                 found.setdefault(key, shown)
     return found
+
+
+def parse_url_list(text):
+    """Lee el contenido de un archivo de enlaces (uno por línea).
+
+    Ignora líneas vacías y comentarios (que empiezan con «#»), y quita
+    repetidos conservando el orden. Devuelve (enlaces, inválidas): las líneas que
+    no empiezan con http:// o https:// se devuelven aparte para avisar al usuario."""
+    urls, invalid, seen = [], [], set()
+    for raw in text.splitlines():
+        line = raw.strip().lstrip('\ufeff')
+        if not line or line.startswith('#'):
+            continue
+        if not line.lower().startswith(('http://', 'https://')):
+            invalid.append(line)
+            continue
+        if line not in seen:
+            seen.add(line)
+            urls.append(line)
+    return urls, invalid
